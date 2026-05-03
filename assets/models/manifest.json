@@ -1,0 +1,54 @@
+{
+  "models": [
+    {
+      "id": "dji_mavic",
+      "name": "DJI Mavic",
+      "path": "assets/models/DJI_Mavic.glb",
+      "source_asset_path": "assets/models/DJI_Mavic.source.fbx",
+      "source": "thedylone/unity-drone-simulator bundled DJI Mavic model",
+      "source_url": "https://github.com/thedylone/unity-drone-simulator",
+      "download_url": "https://github.com/thedylone/unity-drone-simulator/blob/main/unity/drone/Assets/Resources/Mavic.fbx",
+      "license": "MIT",
+      "license_file": "assets/models/UNITY_DRONE_SIMULATOR_LICENSE.txt",
+      "conversion": "assimp export Mavic.fbx DJI_Mavic.glb -f glb2",
+      "usage": "Drone device body in WorldScene"
+    },
+    {
+      "id": "unitree_go2_quadruped",
+      "name": "Unitree Go2 robot dog",
+      "path": "assets/models/Unitree_Go2.usdz",
+      "source_asset_path": "assets/models/Unitree_Go2.usd",
+      "source": "Unitree official unitree_model Go2 USD root asset",
+      "source_url": "https://github.com/unitreerobotics/unitree_model",
+      "download_url": "https://github.com/unitreerobotics/unitree_model/blob/main/Go2/usd/go2.usd",
+      "license": "BSD-3-Clause",
+      "license_file": "assets/models/UNITREE_MODEL_LICENSE.txt",
+      "usage": "Quadruped robot dog device body in WorldScene",
+      "note": "Official root USD is stored with a local renderable USDZ package for the Three.js loader."
+    },
+    {
+      "id": "unitree_g1_humanoid",
+      "name": "Unitree G1 29DoF humanoid",
+      "path": "assets/models/Unitree_G1_29dof.usdz",
+      "source_asset_path": "assets/models/Unitree_G1_29dof.usd",
+      "source": "Unitree official unitree_model G1 29DoF USD root asset",
+      "source_url": "https://github.com/unitreerobotics/unitree_model",
+      "download_url": "https://github.com/unitreerobotics/unitree_model/blob/main/G1/29dof/usd/g1_29dof_rev_1_0/g1_29dof_rev_1_0.usd",
+      "license": "BSD-3-Clause",
+      "license_file": "assets/models/UNITREE_MODEL_LICENSE.txt",
+      "usage": "Humanoid robot device body in WorldScene",
+      "note": "Official root USD is stored with a local renderable USDZ package for the Three.js loader."
+    },
+    {
+      "id": "parrot_bebop_reference",
+      "name": "Parrot Bebop reference drone",
+      "path": "assets/models/Parrot_Bebop.glb",
+      "source": "thedylone/unity-drone-simulator bundled runtime drone model",
+      "source_url": "https://github.com/thedylone/unity-drone-simulator",
+      "download_url": "https://github.com/thedylone/unity-drone-simulator/blob/main/unity/drone/Assets/StreamingAssets/Drone%20Models/Parrot%20Bebop.glb",
+      "license": "MIT",
+      "license_file": "assets/models/UNITY_DRONE_SIMULATOR_LICENSE.txt",
+      "usage": "Reference downloaded real drone model retained for asset audit"
+    }
+  ]
+}

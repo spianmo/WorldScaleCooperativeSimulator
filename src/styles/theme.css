@@ -1,0 +1,91 @@
+:root,
+html[data-theme='light'] {
+  color-scheme: light;
+  --sim-font-display: "Google Sans", "Google Sans Display", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --sim-font-body: Roboto, "Helvetica Neue", Arial, sans-serif;
+  --sim-font-mono: "Roboto Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  --sim-color-primary: #1a73e8;
+  --sim-color-primary-hover: #1558b8;
+  --sim-color-primary-pressed: #174ea6;
+  --sim-color-primary-tint: #e8f0fe;
+  --sim-color-focus-ring: rgba(26, 115, 232, 0.24);
+  --sim-color-on-primary: #ffffff;
+
+  --sim-color-bg: #ffffff;
+  --sim-color-page: #f8f9fa;
+  --sim-color-panel: #ffffff;
+  --sim-color-panel-alt: #f8f9fa;
+  --sim-color-panel-dark: #3c4043;
+  --sim-color-chip: #ffffff;
+  --sim-color-field: #ffffff;
+  --sim-color-row: #ffffff;
+  --sim-color-text: #202124;
+  --sim-color-text-secondary: #3c4043;
+  --sim-color-text-muted: #5f6368;
+  --sim-color-text-faint: #80868b;
+  --sim-color-border: #dadce0;
+  --sim-color-border-soft: #e8eaed;
+  --sim-color-shadow: rgba(60, 64, 67, 0.15);
+
+  --sim-color-success: #1e8e3e;
+  --sim-color-success-bg: #e6f4ea;
+  --sim-color-danger: #d93025;
+  --sim-color-danger-bg: #fce8e6;
+  --sim-color-warning: #f9ab00;
+  --sim-color-warning-bg: #fef7e0;
+
+  --sim-color-scene-bg: #ffffff;
+  --sim-color-scene-ground: #e8eaed;
+  --sim-color-graph-line: #e8eaed;
+  --sim-color-graph-axis: #dadce0;
+
+  --sim-color-terminal-bg: #202124;
+  --sim-color-terminal-fg: #e8eaed;
+  --sim-color-terminal-dim: #9aa0a6;
+  --sim-color-terminal-trace: #bdc1c6;
+  --sim-color-terminal-debug: #8ab4f8;
+  --sim-color-terminal-info: #8ab4f8;
+  --sim-color-terminal-success: #81c995;
+  --sim-color-terminal-warn: #fdd663;
+  --sim-color-terminal-error: #f28b82;
+  --sim-color-terminal-border: #3c4043;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+  --sim-color-primary: #8ab4f8;
+  --sim-color-primary-hover: #aecbfa;
+  --sim-color-primary-pressed: #d2e3fc;
+  --sim-color-primary-tint: rgba(138, 180, 248, 0.12);
+  --sim-color-focus-ring: rgba(138, 180, 248, 0.28);
+  --sim-color-on-primary: #202124;
+
+  --sim-color-bg: #202124;
+  --sim-color-page: #202124;
+  --sim-color-panel: #35363a;
+  --sim-color-panel-alt: #292a2d;
+  --sim-color-panel-dark: #292a2d;
+  --sim-color-chip: #292a2d;
+  --sim-color-field: #202124;
+  --sim-color-row: #35363a;
+  --sim-color-text: #e8eaed;
+  --sim-color-text-secondary: #bdc1c6;
+  --sim-color-text-muted: #9aa0a6;
+  --sim-color-text-faint: #80868b;
+  --sim-color-border: #3c4043;
+  --sim-color-border-soft: #3c4043;
+  --sim-color-shadow: rgba(0, 0, 0, 0.3);
+
+  --sim-color-success: #81c995;
+  --sim-color-success-bg: rgba(129, 201, 149, 0.12);
+  --sim-color-danger: #f28b82;
+  --sim-color-danger-bg: rgba(242, 139, 130, 0.12);
+  --sim-color-warning: #fdd663;
+  --sim-color-warning-bg: rgba(253, 214, 99, 0.14);
+
+  --sim-color-scene-bg: #202124;
+  --sim-color-scene-ground: #292a2d;
+  --sim-color-graph-line: #3c4043;
+  --sim-color-graph-axis: #5f6368;
+}

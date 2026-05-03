@@ -1,0 +1,8 @@
+# 复制为 config/llm.toml 后填写真实密钥；config/llm.toml 已加入 .gitignore。
+enabled = true
+endpoint = "https://www.openclaudecode.cn/v1/chat/completions"
+model = "gpt-5.4"
+api_key = "REDACTED_API_KEY"
+
+# 可选：如果 api_key 为空，运行时会继续尝试读取该环境变量。
+api_key_env = "OPENCLAUDECODE_API_KEY"

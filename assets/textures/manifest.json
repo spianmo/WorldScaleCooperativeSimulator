@@ -1,0 +1,32 @@
+{
+  "textures": [
+    {
+      "id": "asphalt_01_diff_1k",
+      "name": "Asphalt 01 Diffuse 1K",
+      "path": "assets/textures/asphalt_01_diff_1k.jpg",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/asphalt_01",
+      "license": "CC0",
+      "usage": "road material"
+    },
+    {
+      "id": "grass_procedural_1k",
+      "name": "Procedural Grass 1K",
+      "path": "assets/textures/grass_procedural_1k.png",
+      "source": "Generated locally",
+      "source_url": "",
+      "license": "project-generated",
+      "usage": "grass terrain material"
+    },
+    {
+      "id": "concrete_procedural_1k",
+      "name": "Procedural Concrete 1K",
+      "path": "assets/textures/concrete_procedural_1k.png",
+      "source": "Generated locally",
+      "source_url": "",
+      "license": "project-generated",
+      "usage": "building material"
+    }
+  ]
+}
+
