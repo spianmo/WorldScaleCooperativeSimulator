@@ -132,6 +132,7 @@ export const resources = {
         },
         items: {
           darkMode: '深色模式',
+          themeMode: '主题模式',
           language: '语言',
           logDensity: '日志密度',
           autosave: '自动保存',
@@ -145,6 +146,12 @@ export const resources = {
           quickSwitch: '快捷切换',
           currentSettings: '当前设置',
           writeLog: '写入日志',
+          saveNow: '立即保存',
+        },
+        values: {
+          compact: '紧凑',
+          normal: '标准',
+          verbose: '详细',
         },
         status: {
           unsaved: '未保存',
@@ -461,6 +468,7 @@ export const resources = {
         },
         items: {
           darkMode: 'Dark Mode',
+          themeMode: 'Theme Mode',
           language: 'Language',
           logDensity: 'Log Density',
           autosave: 'Auto Save',
@@ -474,6 +482,12 @@ export const resources = {
           quickSwitch: 'Quick Switch',
           currentSettings: 'Current Settings',
           writeLog: 'Write Log',
+          saveNow: 'Save Now',
+        },
+        values: {
+          compact: 'Compact',
+          normal: 'Normal',
+          verbose: 'Verbose',
         },
         status: {
           unsaved: 'Unsaved',

@@ -23,8 +23,38 @@
       "download_url": "https://github.com/unitreerobotics/unitree_model/blob/main/Go2/usd/go2.usd",
       "license": "BSD-3-Clause",
       "license_file": "assets/models/UNITREE_MODEL_LICENSE.txt",
-      "usage": "Quadruped robot dog device body in WorldScene",
-      "note": "Official root USD is stored with a local renderable USDZ package for the Three.js loader."
+      "usage": "Source reference for the quadruped robot dog device",
+      "note": "This USD/USDZ is a small official root reference asset, not the runtime mesh package. Runtime Go2 rendering uses the official Unitree ROS DAE parts listed in unitree_go2_dae_runtime_parts."
+    },
+    {
+      "id": "unitree_go2_dae_runtime_parts",
+      "name": "Unitree Go2 DAE runtime parts",
+      "paths": [
+        "assets/models/unitree_go2/base.dae",
+        "assets/models/unitree_go2/hip.dae",
+        "assets/models/unitree_go2/thigh.dae",
+        "assets/models/unitree_go2/thigh_mirror.dae",
+        "assets/models/unitree_go2/calf.dae",
+        "assets/models/unitree_go2/calf_mirror.dae",
+        "assets/models/unitree_go2/foot.dae",
+        "assets/models/unitree_go2/go2_description.urdf"
+      ],
+      "source": "Unitree official unitree_ros Go2 mesh assets",
+      "source_url": "https://github.com/unitreerobotics/unitree_ros",
+      "download_urls": [
+        "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/go2_description/meshes/base.dae",
+        "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/go2_description/meshes/hip.dae",
+        "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/go2_description/meshes/thigh.dae",
+        "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/go2_description/meshes/thigh_mirror.dae",
+        "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/go2_description/meshes/calf.dae",
+        "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/go2_description/meshes/calf_mirror.dae",
+        "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/go2_description/meshes/foot.dae",
+        "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/go2_description/urdf/go2_description.urdf"
+      ],
+      "license": "BSD-3-Clause",
+      "license_file": "assets/models/UNITREE_MODEL_LICENSE.txt",
+      "usage": "Runtime quadruped body parts loaded by ColladaLoader in WorldScene",
+      "note": "Vendored runtime package size is about 25 MB. WorldScene composes base, hip, thigh, calf and foot DAE parts with light gait animation; this is mesh pose animation, not full joint dynamics or collision simulation."
     },
     {
       "id": "unitree_g1_humanoid",
@@ -36,8 +66,50 @@
       "download_url": "https://github.com/unitreerobotics/unitree_model/blob/main/G1/29dof/usd/g1_29dof_rev_1_0/g1_29dof_rev_1_0.usd",
       "license": "BSD-3-Clause",
       "license_file": "assets/models/UNITREE_MODEL_LICENSE.txt",
-      "usage": "Humanoid robot device body in WorldScene",
-      "note": "Official root USD is stored with a local renderable USDZ package for the Three.js loader."
+      "usage": "Source reference for the humanoid robot device",
+      "note": "This USD/USDZ is a small official root reference asset. Runtime humanoid rendering uses the Unitree ROS STL parts listed in unitree_g1_stl_runtime_parts."
+    },
+    {
+      "id": "unitree_g1_stl_runtime_parts",
+      "name": "Unitree G1 STL runtime core body and limbs",
+      "paths": [
+        "assets/models/unitree_g1/pelvis.STL",
+        "assets/models/unitree_g1/waist_yaw_link.STL",
+        "assets/models/unitree_g1/torso_link.STL",
+        "assets/models/unitree_g1/head_link.STL",
+        "assets/models/unitree_g1/logo_link.STL",
+        "assets/models/unitree_g1/left_hip_pitch_link.STL",
+        "assets/models/unitree_g1/left_hip_roll_link.STL",
+        "assets/models/unitree_g1/left_hip_yaw_link.STL",
+        "assets/models/unitree_g1/left_knee_link.STL",
+        "assets/models/unitree_g1/left_ankle_pitch_link.STL",
+        "assets/models/unitree_g1/left_ankle_roll_link.STL",
+        "assets/models/unitree_g1/right_hip_pitch_link.STL",
+        "assets/models/unitree_g1/right_hip_roll_link.STL",
+        "assets/models/unitree_g1/right_hip_yaw_link.STL",
+        "assets/models/unitree_g1/right_knee_link.STL",
+        "assets/models/unitree_g1/right_ankle_pitch_link.STL",
+        "assets/models/unitree_g1/right_ankle_roll_link.STL",
+        "assets/models/unitree_g1/left_shoulder_pitch_link.STL",
+        "assets/models/unitree_g1/left_shoulder_roll_link.STL",
+        "assets/models/unitree_g1/left_shoulder_yaw_link.STL",
+        "assets/models/unitree_g1/left_elbow_link.STL",
+        "assets/models/unitree_g1/right_shoulder_pitch_link.STL",
+        "assets/models/unitree_g1/right_shoulder_roll_link.STL",
+        "assets/models/unitree_g1/right_shoulder_yaw_link.STL",
+        "assets/models/unitree_g1/right_elbow_link.STL",
+        "assets/models/unitree_g1/g1_29dof.urdf"
+      ],
+      "source": "Unitree official unitree_ros G1 mesh assets",
+      "source_url": "https://github.com/unitreerobotics/unitree_ros",
+      "download_urls": [
+        "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/g1_description/meshes/",
+        "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/g1_description/urdf/g1_29dof.urdf"
+      ],
+      "license": "BSD-3-Clause",
+      "license_file": "assets/models/UNITREE_MODEL_LICENSE.txt",
+      "usage": "Runtime humanoid body parts loaded by STLLoader in WorldScene",
+      "note": "Runtime covers pelvis, waist, torso, head, logo, main leg joints and main arm joints. Fingers, palms and small sensor shells are intentionally not included yet to keep runtime bundle size controlled."
     },
     {
       "id": "parrot_bebop_reference",

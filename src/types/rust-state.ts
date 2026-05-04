@@ -107,7 +107,11 @@ export interface WorldSnapshot {
   coordinateSystemVisible: boolean;
   terrain: {
     slopeDeg: number;
-    weather: 'sunny' | 'cloudy' | 'rainy' | 'foggy';
+    weather: 'sunny' | 'cloudy' | 'rainy' | 'foggy' | 'windy' | 'stormy';
+    precipitationMmH?: number;
+    windMps?: number;
+    visibilityM?: number;
+    surfaceFrictionScale?: number;
   };
   materials: WorldMaterial[];
   objects: WorldObject[];

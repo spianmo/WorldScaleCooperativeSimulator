@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
 
 export interface SceneProps {
@@ -7,6 +7,8 @@ export interface SceneProps {
   className?: string;
   style?: CSSProperties;
   cameraPosition?: [number, number, number];
+  cameraTarget?: [number, number, number];
+  cameraMode?: 'orbit' | 'first_person';
   background?: string;
   minHeight?: number | string;
 }
@@ -21,11 +23,35 @@ function resolveCssColor(color: string) {
   return value || color;
 }
 
+function CameraRig({
+  position,
+  target,
+  mode,
+}: {
+  position: [number, number, number];
+  target: [number, number, number];
+  mode: 'orbit' | 'first_person';
+}) {
+  const { camera } = useThree();
+
+  useEffect(() => {
+    camera.position.set(position[0], position[1], position[2]);
+    if (mode === 'first_person') {
+      camera.lookAt(target[0], target[1], target[2]);
+    }
+    camera.updateProjectionMatrix();
+  }, [camera, mode, position, target]);
+
+  return null;
+}
+
 export function Scene({
   children,
   className,
   style,
   cameraPosition = [7.5, 5.5, 7.5],
+  cameraTarget = [0, 0, 0],
+  cameraMode = 'orbit',
   background = 'var(--sim-color-scene-bg)',
   minHeight = 380,
 }: SceneProps) {
@@ -69,6 +95,7 @@ export function Scene({
       >
         <color attach="background" args={[resolvedBackground]} />
         <fog attach="fog" args={[resolvedBackground, 18, 54]} />
+        <CameraRig position={cameraPosition} target={cameraTarget} mode={cameraMode} />
         <ambientLight intensity={1.2} />
         <directionalLight position={[8, 12, 8]} intensity={2.1} />
         <directionalLight position={[-8, 4, -8]} intensity={0.75} />
@@ -86,7 +113,7 @@ export function Scene({
           sectionSize={5}
         />
         {children}
-        <OrbitControls makeDefault enableDamping dampingFactor={0.08} />
+        <OrbitControls makeDefault enabled={cameraMode === 'orbit'} target={cameraTarget} enableDamping dampingFactor={0.08} />
       </Canvas>
     </div>
   );

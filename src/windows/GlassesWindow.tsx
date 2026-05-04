@@ -116,11 +116,16 @@ export function GlassesWindow({ transcript = defaultTranscript, logs = defaultLo
             deviceName="Glasses Mirror"
             devicePosition={gazePosition}
             deviceRotation={[0, -0.9, 0]}
-            cameraPosition={[6.5, 4.8, 6.4]}
+            cameraPosition={[2.1, 0.72, 1.05]}
+            cameraTarget={[5.2, 0.58, -2.9]}
+            cameraMode="first_person"
             minHeight="100%"
             objects={state.world.objects}
             devices={state.devices}
+            weather={state.world.terrain}
             showAxes={state.world.coordinateSystemVisible}
+            hidePrimaryDevice
+            tickIntervalMs={state.settings.tickIntervalMs}
           />
           <TerminalLog
             title={t('glassesWindow.logTitle')}

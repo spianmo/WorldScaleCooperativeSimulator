@@ -10,14 +10,14 @@ export default defineConfig({
     entry: {
       index: './src/main.tsx',
     },
-    assetsInclude: [/\.(glb|usd|usdz)$/i],
+    assetsInclude: [/\.(glb|usd|usdz|stl|dae|urdf)$/i],
   },
   tools: {
     rspack: {
       module: {
         rules: [
           {
-            test: /\.(usd|usdz)$/i,
+            test: /\.(usd|usdz|stl|dae|urdf)$/i,
             type: 'asset/resource',
           },
         ],

@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { FiClock, FiFileText, FiGlobe, FiInfo, FiMoon, FiRotateCcw, FiSave } from 'react-icons/fi';
 import { useTranslation } from 'react-i18next';
 import { Toolbar } from '../components/Toolbar';
 import { useSimulation } from '../state';
-import type { LogLevel } from '../types';
+import type { LocaleCode, LogLevel, SimulationSettings, ThemeMode } from '../types';
 
 export interface SettingsWindowProps {
   title?: string;
@@ -11,7 +11,20 @@ export interface SettingsWindowProps {
 
 const logLevelOrder: LogLevel[] = ['trace', 'debug', 'info', 'warn', 'error'];
 const tickIntervals = [500, 1000, 2000, 5000];
-const densities = ['compact', 'normal', 'verbose'] as const;
+type TerminalLogDensity = SimulationSettings['terminalLogDensity'];
+const densities: TerminalLogDensity[] = ['compact', 'normal', 'verbose'];
+
+interface SettingOption<T extends string | number> {
+  value: T;
+  label: string;
+}
+
+interface OptionGroupProps<T extends string | number> {
+  label: string;
+  value: T;
+  options: SettingOption<T>[];
+  onChange: (value: T) => void;
+}
 
 interface SwitchControlProps {
   label: string;
@@ -34,6 +47,34 @@ function SwitchControl({ label, checked, onChange }: SwitchControlProps) {
   );
 }
 
+function OptionGroup<T extends string | number>({
+  label,
+  value,
+  options,
+  onChange,
+}: OptionGroupProps<T>) {
+  return (
+    <div className="sim-segmented-control" role="radiogroup" aria-label={label}>
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={String(option.value)}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            aria-pressed={active}
+            className="sim-segmented-option"
+            onClick={() => onChange(option.value)}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 interface ValueButtonProps {
   label: string;
   active: boolean;
@@ -51,6 +92,19 @@ function ValueButton({ label, active, onClick }: ValueButtonProps) {
       {label}
     </button>
   );
+}
+
+interface SettingItem {
+  label: string;
+  value: string;
+  active?: boolean;
+  control: ReactNode;
+}
+
+interface SettingGroup {
+  title: string;
+  icon: ReactNode;
+  items: SettingItem[];
 }
 
 export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
@@ -75,44 +129,75 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
     appendLog({ level: 'info', scope: 'settings', message: t('settingsWindow.status.savedLog') });
   };
 
-  const nextLogLevel = () => {
-    const index = logLevelOrder.indexOf(state.settings.logLevel);
-    setSettings({ logLevel: logLevelOrder[(index + 1) % logLevelOrder.length] });
-  };
+  const themeOptions: SettingOption<ThemeMode>[] = [
+    { value: 'light', label: t('theme.light') },
+    { value: 'dark', label: t('theme.dark') },
+    { value: 'system', label: t('theme.system') },
+  ];
+  const localeOptions: SettingOption<LocaleCode>[] = [
+    { value: 'zh-CN', label: t('locale.zhCN') },
+    { value: 'en-US', label: t('locale.enUS') },
+  ];
+  const densityOptions: SettingOption<TerminalLogDensity>[] = densities.map((density) => ({
+    value: density,
+    label: t(`settingsWindow.values.${density}`),
+  }));
+  const tickIntervalOptions: SettingOption<number>[] = tickIntervals.map((interval) => ({
+    value: interval,
+    label: `${interval} ms`,
+  }));
+  const logLevelOptions: SettingOption<LogLevel>[] = logLevelOrder.map((level) => ({
+    value: level,
+    label: t(`log.${level}`),
+  }));
+  const selectedThemeLabel = themeOptions.find((option) => option.value === state.settings.theme.mode)?.label ?? state.settings.theme.mode;
+  const selectedLocaleLabel = localeOptions.find((option) => option.value === state.settings.locale)?.label ?? state.settings.locale;
+  const selectedDensityLabel = densityOptions.find((option) => option.value === state.settings.terminalLogDensity)?.label ?? state.settings.terminalLogDensity;
+  const selectedLogLevelLabel = logLevelOptions.find((option) => option.value === state.settings.logLevel)?.label ?? state.settings.logLevel;
 
-  const nextTickInterval = () => {
-    const index = tickIntervals.indexOf(state.settings.tickIntervalMs);
-    setSettings({ tickIntervalMs: tickIntervals[(index + 1) % tickIntervals.length] });
-  };
-
-  const nextDensity = () => {
-    const index = densities.indexOf(state.settings.terminalLogDensity);
-    setSettings({ terminalLogDensity: densities[(index + 1) % densities.length] });
-  };
-
-  const settingsGroups = [
+  const settingsGroups: SettingGroup[] = [
     {
       title: t('settingsWindow.groups.interface'),
       icon: <FiGlobe />,
       items: [
         {
-          label: t('settingsWindow.items.darkMode'),
-          value: state.settings.theme.mode === 'dark' ? t('common.enabled') : t('common.disabled'),
-          active: state.settings.theme.mode === 'dark',
-          onClick: () => setThemeMode(state.settings.theme.mode === 'dark' ? 'light' : 'dark'),
-          control: 'switch',
+          label: t('settingsWindow.items.themeMode'),
+          value: selectedThemeLabel,
+          active: state.settings.theme.mode !== 'system',
+          control: (
+            <OptionGroup
+              label={t('settingsWindow.items.themeMode')}
+              value={state.settings.theme.mode}
+              options={themeOptions}
+              onChange={setThemeMode}
+            />
+          ),
         },
         {
           label: t('settingsWindow.items.language'),
-          value: state.settings.locale,
+          value: selectedLocaleLabel,
           active: state.settings.locale === 'zh-CN',
-          onClick: () => setLocale(state.settings.locale === 'zh-CN' ? 'en-US' : 'zh-CN'),
+          control: (
+            <OptionGroup
+              label={t('settingsWindow.items.language')}
+              value={state.settings.locale}
+              options={localeOptions}
+              onChange={setLocale}
+            />
+          ),
         },
         {
           label: t('settingsWindow.items.logDensity'),
-          value: state.settings.terminalLogDensity,
+          value: selectedDensityLabel,
           active: state.settings.terminalLogDensity !== 'normal',
-          onClick: nextDensity,
+          control: (
+            <OptionGroup
+              label={t('settingsWindow.items.logDensity')}
+              value={state.settings.terminalLogDensity}
+              options={densityOptions}
+              onChange={(terminalLogDensity) => setSettings({ terminalLogDensity })}
+            />
+          ),
         },
       ],
     },
@@ -124,20 +209,38 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
           label: t('settingsWindow.items.autosave'),
           value: state.settings.autosaveEnabled ? t('common.enabled') : t('common.disabled'),
           active: state.settings.autosaveEnabled,
-          onClick: () => setSettings({ autosaveEnabled: !state.settings.autosaveEnabled }),
-          control: 'switch',
+          control: (
+            <SwitchControl
+              label={t('settingsWindow.items.autosave')}
+              checked={state.settings.autosaveEnabled}
+              onChange={() => setSettings({ autosaveEnabled: !state.settings.autosaveEnabled })}
+            />
+          ),
         },
         {
           label: t('settingsWindow.items.tickInterval'),
           value: `${state.settings.tickIntervalMs} ms`,
           active: state.settings.tickIntervalMs !== 1000,
-          onClick: nextTickInterval,
+          control: (
+            <OptionGroup
+              label={t('settingsWindow.items.tickInterval')}
+              value={state.settings.tickIntervalMs}
+              options={tickIntervalOptions}
+              onChange={(tickIntervalMs) => setSettings({ tickIntervalMs })}
+            />
+          ),
         },
         {
           label: t('settingsWindow.items.saveSnapshot'),
           value: snapshotStatus,
           active: snapshotStatus !== t('settingsWindow.status.unsaved'),
-          onClick: saveSnapshot,
+          control: (
+            <ValueButton
+              label={t('settingsWindow.actions.saveNow')}
+              active={snapshotStatus !== t('settingsWindow.status.unsaved')}
+              onClick={saveSnapshot}
+            />
+          ),
         },
       ],
     },
@@ -149,20 +252,38 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
           label: t('settingsWindow.items.showAxes'),
           value: state.world.coordinateSystemVisible ? t('common.enabled') : t('common.disabled'),
           active: state.world.coordinateSystemVisible,
-          onClick: toggleCoordinateSystem,
-          control: 'switch',
+          control: (
+            <SwitchControl
+              label={t('settingsWindow.items.showAxes')}
+              checked={state.world.coordinateSystemVisible}
+              onChange={toggleCoordinateSystem}
+            />
+          ),
         },
         {
           label: t('settingsWindow.items.logLevel'),
-          value: state.settings.logLevel,
+          value: selectedLogLevelLabel,
           active: state.settings.logLevel !== 'info',
-          onClick: nextLogLevel,
+          control: (
+            <OptionGroup
+              label={t('settingsWindow.items.logLevel')}
+              value={state.settings.logLevel}
+              options={logLevelOptions}
+              onChange={(logLevel) => setSettings({ logLevel })}
+            />
+          ),
         },
         {
           label: t('settingsWindow.items.recordD3Refresh'),
           value: t('settingsWindow.actions.writeLog'),
           active: false,
-          onClick: () => appendLog({ level: 'debug', scope: 'settings', message: t('settingsWindow.status.d3Logged') }),
+          control: (
+            <ValueButton
+              label={t('settingsWindow.actions.writeLog')}
+              active={false}
+              onClick={() => appendLog({ level: 'debug', scope: 'settings', message: t('settingsWindow.status.d3Logged') })}
+            />
+          ),
         },
       ],
     },
@@ -195,16 +316,12 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
 
             <div className="sim-scroll-list grid gap-2.5">
               {group.items.map((item) => (
-                <div key={item.label} className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                  <span className="grid min-w-0 gap-1">
+                <div key={item.label} className="sim-row sim-setting-row px-3 py-2.5">
+                  <span className="sim-setting-copy grid min-w-0 gap-1">
                     <span className="text-sm">{item.label}</span>
                     <span className="break-words text-xs text-sim-muted">{item.value}</span>
                   </span>
-                  {item.control === 'switch' ? (
-                    <SwitchControl label={item.label} checked={item.active} onChange={item.onClick} />
-                  ) : (
-                    <ValueButton label={t('common.switch')} active={item.active} onClick={item.onClick} />
-                  )}
+                  <span className="sim-setting-control">{item.control}</span>
                 </div>
               ))}
             </div>

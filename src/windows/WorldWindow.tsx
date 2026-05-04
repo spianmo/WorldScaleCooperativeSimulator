@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { FiActivity, FiCpu, FiEye, FiFolder, FiRefreshCw, FiSave, FiSettings, FiTarget } from 'react-icons/fi';
 import { useTranslation } from 'react-i18next';
 import { Toolbar } from '../components/Toolbar';
-import { WorldScene } from '../components/WorldScene';
+import { WorldScene, mapDeviceTelemetryPosition } from '../components/WorldScene';
 import { TelemetryChart, type TelemetrySeries } from '../components/TelemetryChart';
 import { TerminalLog, type TerminalEntry } from '../components/TerminalLog';
 import { useSimulation } from '../state';
@@ -56,7 +56,9 @@ export function WorldWindow({ worldName, deviceName, telemetry, logs }: WorldWin
   const [snapshotStatus, setSnapshotStatus] = useState(t('worldWindow.status.unread'));
   const [glassesOpened, setGlassesOpened] = useState(false);
   const primaryDevice = state.devices[0];
-  const devicePosition = (primaryDevice?.telemetry.position ?? [2.4, 0.05, 1.2]) as [number, number, number];
+  const devicePosition = primaryDevice
+    ? mapDeviceTelemetryPosition(primaryDevice.telemetry.position)
+    : [2.4, 0.05, 1.2] as [number, number, number];
   const deviceRotation = [0, primaryDevice ? (primaryDevice.telemetry.headingDeg / 180) * Math.PI : -0.45, 0] as [number, number, number];
   const resolvedWorldName = worldName ?? state.world.name;
   const resolvedDeviceName = deviceName ?? primaryDevice?.name ?? t('worldWindow.noDevice');
@@ -208,7 +210,9 @@ export function WorldWindow({ worldName, deviceName, telemetry, logs }: WorldWin
             minHeight="100%"
             objects={state.world.objects}
             devices={state.devices}
+            weather={state.world.terrain}
             showAxes={state.world.coordinateSystemVisible}
+            tickIntervalMs={state.settings.tickIntervalMs}
           />
           <TelemetryChart
             title={t('worldWindow.telemetryTitle')}

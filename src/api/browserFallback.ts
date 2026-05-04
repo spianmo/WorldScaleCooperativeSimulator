@@ -124,6 +124,55 @@ function randomId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 }
 
+function weatherPhysics(weather: WorldSnapshot['terrain']['weather']) {
+  if (weather === 'stormy') {
+    return {
+      precipitationMmH: 18,
+      windMps: 16,
+      visibilityM: 140,
+      surfaceFrictionScale: 0.55,
+    };
+  }
+  if (weather === 'rainy') {
+    return {
+      precipitationMmH: 8,
+      windMps: 6,
+      visibilityM: 420,
+      surfaceFrictionScale: 0.72,
+    };
+  }
+  if (weather === 'foggy') {
+    return {
+      precipitationMmH: 0.8,
+      windMps: 2,
+      visibilityM: 90,
+      surfaceFrictionScale: 0.86,
+    };
+  }
+  if (weather === 'windy') {
+    return {
+      precipitationMmH: 0,
+      windMps: 11,
+      visibilityM: 900,
+      surfaceFrictionScale: 0.94,
+    };
+  }
+  if (weather === 'cloudy') {
+    return {
+      precipitationMmH: 0,
+      windMps: 4,
+      visibilityM: 1200,
+      surfaceFrictionScale: 1,
+    };
+  }
+  return {
+    precipitationMmH: 0,
+    windMps: 1.5,
+    visibilityM: 1600,
+    surfaceFrictionScale: 1,
+  };
+}
+
 function createGeneratedWorld(args: BrowserInvokeArgs): WorldSnapshot {
   const current = readStoredState();
   const input = args && typeof args === 'object' && args.input && typeof args.input === 'object'
@@ -134,6 +183,7 @@ function createGeneratedWorld(args: BrowserInvokeArgs): WorldSnapshot {
   const blocksPerAxis = Math.max(4, Math.min(8, Math.round(4 + density * 8)));
   const spacing = 100 / blocksPerAxis;
   const objects: WorldObject[] = [];
+  const weather = ['sunny', 'cloudy', 'rainy', 'foggy', 'windy', 'stormy'][Math.floor(Math.random() * 6)] as WorldSnapshot['terrain']['weather'];
   const roadNames = ['解放路', '中轴大道', '滨河路', '科创街', '人民路', '站前大道', '新华路', '云栖路'];
   const buildingNames = ['新华大厦', '城市运行中心', '数字孪生塔', '能源调度站', '市民服务楼', '轨交换乘楼'];
 
@@ -228,7 +278,8 @@ function createGeneratedWorld(args: BrowserInvokeArgs): WorldSnapshot {
     seed: String(input.seed ?? Date.now()),
     terrain: {
       slopeDeg: 4,
-      weather: ['sunny', 'cloudy', 'rainy', 'foggy'][Math.floor(Math.random() * 4)] as WorldSnapshot['terrain']['weather'],
+      weather,
+      ...weatherPhysics(weather),
     },
     objects,
     createdAt: timestamp,
@@ -599,6 +650,9 @@ function registerDefaultHandlers() {
   browserHandlers.set('tick_simulation', (args) => {
     const currentState = readStoredState();
     const steps = extractSteps(args);
+    const weather = currentState.world.terrain.weather;
+    const frictionScale = currentState.world.terrain.surfaceFrictionScale ?? weatherPhysics(weather).surfaceFrictionScale;
+    const windMps = currentState.world.terrain.windMps ?? weatherPhysics(weather).windMps;
     const activeTaskByDevice = new Map<string, SimulationTask>();
     currentState.tasks.forEach((task) => {
       if (task.assigneeDeviceId && task.status !== 'completed' && task.status !== 'canceled' && task.status !== 'failed') {
@@ -617,21 +671,28 @@ function registerDefaultHandlers() {
         const activeTask = activeTaskByDevice.get(device.id);
         const working = Boolean(activeTask);
         const profile = device.physicalProfile ?? defaultPhysicalProfile(device.kind, currentState);
-        const speed = working ? profile.maxSpeedMps : 0;
+        const weatherSpeedScale = device.kind === 'drone'
+          ? Math.max(0.35, 1 - windMps / 34)
+          : Math.max(0.35, frictionScale);
+        const speed = working ? profile.maxSpeedMps * weatherSpeedScale : 0;
         const distance = speed * steps * Math.max(0.2, currentState.settings.tickIntervalMs / 1000);
-        const nextHeading = working ? (device.telemetry.headingDeg + steps * 11) % 360 : device.telemetry.headingDeg;
+        const taskHash = activeTask
+          ? [...activeTask.id].reduce((acc, char) => acc + char.charCodeAt(0), 0)
+          : 0;
+        const nextHeading = working ? (device.telemetry.headingDeg + steps * (7 + taskHash % 9)) % 360 : device.telemetry.headingDeg;
         const headingRad = (nextHeading / 180) * Math.PI;
+        const drift = device.kind === 'drone' ? windMps * 0.04 * steps : windMps * 0.006 * steps;
         const nextPosition: [number, number, number] = [
-          Number((device.telemetry.position[0] + Math.cos(headingRad) * distance).toFixed(2)),
+          Number((device.telemetry.position[0] + Math.cos(headingRad) * distance + drift).toFixed(2)),
           device.kind === 'drone'
             ? Math.min(Math.max(device.telemetry.position[1], currentState.physicalRules.droneMinAltitudeM), currentState.physicalRules.droneMaxAltitudeM)
             : device.telemetry.position[1],
-          Number((device.telemetry.position[2] + Math.sin(headingRad) * distance).toFixed(2)),
+          Number((device.telemetry.position[2] + Math.sin(headingRad) * distance + drift * 0.35).toFixed(2)),
         ];
         const nextVelocity: [number, number, number] = [
-          Number((Math.cos(headingRad) * speed).toFixed(2)),
+          Number((Math.cos(headingRad) * speed + drift).toFixed(2)),
           0,
-          Number((Math.sin(headingRad) * speed).toFixed(2)),
+          Number((Math.sin(headingRad) * speed + drift * 0.35).toFixed(2)),
         ];
         const jointQuaternion: [number, number, number, number] = [0, Math.sin(headingRad / 2), 0, Math.cos(headingRad / 2)];
         return {

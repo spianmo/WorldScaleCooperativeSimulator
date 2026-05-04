@@ -313,6 +313,75 @@ function defaultMaterials(): WorldMaterial[] {
   ];
 }
 
+function mapWeather(climate: string): WorldSnapshot['terrain']['weather'] {
+  if (climate === 'rainy') {
+    return 'rainy';
+  }
+  if (climate === 'foggy') {
+    return 'foggy';
+  }
+  if (climate === 'cloudy') {
+    return 'cloudy';
+  }
+  if (climate === 'windy') {
+    return 'windy';
+  }
+  if (climate === 'stormy') {
+    return 'stormy';
+  }
+  return 'sunny';
+}
+
+function weatherPhysics(climate: string) {
+  const weather = mapWeather(climate);
+  if (weather === 'stormy') {
+    return {
+      precipitationMmH: 18,
+      windMps: 16,
+      visibilityM: 140,
+      surfaceFrictionScale: 0.55,
+    };
+  }
+  if (weather === 'rainy') {
+    return {
+      precipitationMmH: 8,
+      windMps: 6,
+      visibilityM: 420,
+      surfaceFrictionScale: 0.72,
+    };
+  }
+  if (weather === 'foggy') {
+    return {
+      precipitationMmH: 0.8,
+      windMps: 2,
+      visibilityM: 90,
+      surfaceFrictionScale: 0.86,
+    };
+  }
+  if (weather === 'windy') {
+    return {
+      precipitationMmH: 0,
+      windMps: 11,
+      visibilityM: 900,
+      surfaceFrictionScale: 0.94,
+    };
+  }
+  if (weather === 'cloudy') {
+    return {
+      precipitationMmH: 0,
+      windMps: 4,
+      visibilityM: 1200,
+      surfaceFrictionScale: 1,
+    };
+  }
+  return {
+    precipitationMmH: 0,
+    windMps: 1.5,
+    visibilityM: 1600,
+    surfaceFrictionScale: 1,
+  };
+}
+
 function defaultPhysicalProfile(kind: DeviceKind) {
   if (kind === 'drone') {
     return {
@@ -397,7 +466,8 @@ export function fromRustSimulationState(rustState: RustSimulationState): Simulat
     coordinateSystemVisible: true,
     terrain: {
       slopeDeg: rustState.world.terrain === 'mountain' ? 28 : rustState.world.terrain === 'mixed' ? 12 : 4,
-      weather: rustState.world.climate === 'rainy' ? 'rainy' : rustState.world.climate === 'foggy' ? 'foggy' : rustState.world.climate === 'cloudy' ? 'cloudy' : 'sunny',
+      weather: mapWeather(rustState.world.climate),
+      ...weatherPhysics(rustState.world.climate),
     },
     materials: defaultMaterials(),
     objects: rustState.world.objects.map(mapWorldObject),
@@ -419,7 +489,13 @@ export function fromRustSimulationState(rustState: RustSimulationState): Simulat
       currentTaskId: device.current_task_id ?? undefined,
       telemetry: {
         position: vectorToTuple(device.position),
-        velocity: [device.status === 'moving' || device.status === 'working' ? profile.maxSpeedMps : 0, 0, 0],
+        velocity: device.status === 'moving' || device.status === 'working'
+          ? [
+              Number((Math.cos((device.orientation_deg / 180) * Math.PI) * profile.maxSpeedMps * (world.terrain.surfaceFrictionScale ?? 1)).toFixed(2)),
+              0,
+              Number((Math.sin((device.orientation_deg / 180) * Math.PI) * profile.maxSpeedMps * (world.terrain.surfaceFrictionScale ?? 1)).toFixed(2)),
+            ]
+          : [0, 0, 0],
         headingDeg: device.orientation_deg,
         batteryPercent,
         powerW: device.status === 'working' ? profile.workingPowerW : profile.nominalPowerW,

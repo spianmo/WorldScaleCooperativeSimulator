@@ -270,6 +270,38 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
     };
   }, [hydrated]);
 
+  useEffect(() => {
+    if (!hydrated || state.phase === 'paused') {
+      return undefined;
+    }
+
+    const hasActiveWork = state.tasks.some((task) => task.status === 'active');
+    if (!hasActiveWork) {
+      return undefined;
+    }
+
+    // 有活跃任务时由前端统一驱动 tick，保证眼镜下发目标后终端会持续反馈位置。
+    let ticking = false;
+    const intervalMs = Math.max(250, state.settings.tickIntervalMs);
+    const timer = window.setInterval(() => {
+      if (ticking) {
+        return;
+      }
+
+      ticking = true;
+      void invokeTickSimulation(1)
+        .then(updateState)
+        .catch((tickError) => {
+          setError(tickError instanceof Error ? tickError.message : '自动推进仿真 tick 失败');
+        })
+        .finally(() => {
+          ticking = false;
+        });
+    }, intervalMs);
+
+    return () => window.clearInterval(timer);
+  }, [hydrated, state.phase, state.settings.tickIntervalMs, state.tasks]);
+
   const updateState = (nextState: SimulationState) => {
     commitState(nextState);
   };

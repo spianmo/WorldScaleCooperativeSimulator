@@ -76,31 +76,51 @@ export function TerminalLog({
     scrollToBottom('auto');
   }, [autoScroll, entries.length, scrollToBottom]);
 
+  useEffect(() => {
+    if (!autoScroll) {
+      return undefined;
+    }
+
+    const frameId = window.requestAnimationFrame(() => scrollToBottom('auto'));
+    return () => window.cancelAnimationFrame(frameId);
+  }, [autoScroll, entries, scrollToBottom]);
+
   return (
     <section className="sim-terminal-log grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-[8px] border border-sim-terminal-border bg-sim-terminal-bg text-sim-terminal-fg">
       <div className="flex items-center justify-between gap-3 border-b border-sim-terminal-border px-4 py-3">
         <div className="font-mono text-[13px] font-medium leading-[1.38] tracking-normal">{title}</div>
         <div className="sim-log-toolbar">
           <span className="text-xs text-sim-terminal-dim">{t('terminal.count', { count: entries.length })}</span>
-          <button
-            type="button"
-            className="sim-log-control-button"
-            aria-label={autoScroll ? t('terminal.disableAutoScroll') : t('terminal.enableAutoScroll')}
-            aria-pressed={autoScroll}
-            title={autoScroll ? t('terminal.disableAutoScrollTitle') : t('terminal.enableAutoScrollTitle')}
-            onClick={() => setAutoScroll((current) => !current)}
+          <span
+            className="sim-log-control-wrap"
+            data-tooltip={autoScroll ? t('terminal.disableAutoScroll') : t('terminal.enableAutoScroll')}
           >
-            {autoScroll ? <FiPlay aria-hidden="true" /> : <FiPause aria-hidden="true" />}
-          </button>
-          <button
-            type="button"
-            className="sim-log-control-button"
-            aria-label={t('terminal.scrollToBottom')}
-            title={t('terminal.scrollToBottomTitle')}
-            onClick={() => scrollToBottom()}
-          >
-            <FiArrowDown aria-hidden="true" />
-          </button>
+            <button
+              type="button"
+              className="sim-log-control-button"
+              aria-label={autoScroll ? t('terminal.disableAutoScroll') : t('terminal.enableAutoScroll')}
+              aria-pressed={autoScroll}
+              title={autoScroll ? t('terminal.disableAutoScrollTitle') : t('terminal.enableAutoScrollTitle')}
+              onClick={() => setAutoScroll((current) => !current)}
+            >
+              {autoScroll ? <FiPlay aria-hidden="true" /> : <FiPause aria-hidden="true" />}
+            </button>
+            <span className="sim-log-control-tooltip" role="tooltip">
+              {autoScroll ? t('terminal.disableAutoScroll') : t('terminal.enableAutoScroll')}
+            </span>
+          </span>
+          <span className="sim-log-control-wrap" data-tooltip={t('terminal.scrollToBottom')}>
+            <button
+              type="button"
+              className="sim-log-control-button"
+              aria-label={t('terminal.scrollToBottom')}
+              title={t('terminal.scrollToBottomTitle')}
+              onClick={() => scrollToBottom()}
+            >
+              <FiArrowDown aria-hidden="true" />
+            </button>
+            <span className="sim-log-control-tooltip" role="tooltip">{t('terminal.scrollToBottom')}</span>
+          </span>
         </div>
       </div>
 

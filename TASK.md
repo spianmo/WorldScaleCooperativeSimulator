@@ -99,3 +99,54 @@
 - [x] 验证 `cargo check --manifest-path src-tauri/Cargo.toml`
 - [x] 验证 `rg` 无 Leva 残留
 - [x] Playwright Chromium 验证主题跨窗口同步、创建世界、创建设备、tooltip、桌面/移动横向溢出
+
+## 阶段 8：物理真实性与 agentic 网关强化
+
+- [x] 对照原始需求重新核对真实材质、真实机器人模型、天气物理、LLM agents 网关、设备移动和第一视角缺口
+- [x] 下载并接入 Poly Haven 1K 沥青、混凝土、草地/岩石纹理，世界道路、建筑、地形不再依赖白色默认材质
+- [x] 下载并接入 Unitree ROS G1 pelvis/waist/torso/head/logo/主要四肢 STL，人形机器人主路径使用真实 STL 几何
+- [x] 修正 Unitree Go2/G1 官方 USD/USDZ 资产口径：根引用资产保留为来源证据，不再描述为完整可渲染运行时模型
+- [x] 下载并接入 Unitree ROS Go2 `base/hip/thigh/calf/foot` DAE 与 URDF，四足机器狗主路径使用 `ColladaLoader` 官方 DAE 部件
+- [x] Rust 与浏览器 fallback 增加 `windy` / `stormy` 天气、降雨、风速、能见度和地表摩擦系数
+- [x] Rust 与浏览器 fallback 的 `simulate_tick` 按天气摩擦、风速和任务状态推进终端位置、朝向、速度
+- [x] `SimulationProvider` 在存在 active task 时按 `settings.tickIntervalMs` 自动推进 tick，眼镜下发目标后终端可实时移动/飞行
+- [x] `WorldScene` 增加天气可视层：雾、云、雨线、风线
+- [x] `Scene` / `WorldScene` 支持 `cameraMode="first_person"` 与 `cameraTarget`
+- [x] 设备终端窗口使用当前设备 telemetry 计算第一视角相机位置和朝向
+- [x] AI 眼镜窗口使用人的朝向第一视角渲染城市镜像
+- [x] 资产 `manifest.json` / `README.md` 记录真实来源、许可证、运行时用途、Go2 DAE 包体和 G1 未含手部/传感器的边界
+- [x] 验证 `npm run typecheck`
+- [x] 验证 `npm run build`
+- [x] 验证 `cargo check --manifest-path src-tauri/Cargo.toml`
+- [x] 验证模型/纹理文件类型与体积
+- [x] Playwright 验证眼镜目标下发后 Go2/G1/drone 自动 tick 移动，并生成 world/glasses/device 第一视角截图，无业务 console error
+
+## 阶段 9：现代建筑纹理、设备外壳贴图与 tick 平滑动画
+
+- [x] 接入 ambientCG `Facade001` 现代玻璃幕墙贴图，替换建筑运行时混凝土外立面
+- [x] 给建筑叠加程序化现代窗格层，让城市楼宇具备可见窗格纹理
+- [x] 给 Unitree G1 STL 运行时几何生成投影 UV，并挂载设备外壳贴图
+- [x] 对 Unitree Go2 DAE 和 DJI Mavic GLB 的无贴图材质补设备外壳贴图
+- [x] 给 G1 / Go2 / 无人机 fallback 几何补程序化外壳贴图
+- [x] 设备渲染 group 使用 `useFrame` 按 `settings.tickIntervalMs` 插值追踪 tick 目标位置，降低离散 tick 的瞬移感
+- [x] `assets/textures/manifest.json` / `README.md` 记录 Facade001 与矩形立面备选纹理来源、许可证和运行时用途
+- [x] 验证 `npm run typecheck`
+- [x] 验证 `npm run build`
+- [x] 验证 `cargo check --manifest-path src-tauri/Cargo.toml`
+- [x] 验证纹理 manifest JSON 与新增纹理文件类型
+- [x] Playwright 验证世界、Go2 第一视角、G1 第一视角截图无业务 console error，并确认自动 tick 后设备位置有推进
+
+## 阶段 10：设备工作动画、设置窗口重构与终端日志体验
+
+- [x] 无人机模型增加 4 个可见旋翼组，按 `speedMps` 使用 `useFrame` 持续旋转
+- [x] G1 人形机器人将躯干、头部、腿部、手臂动作改为 `useFrame` 步态相位驱动
+- [x] Go2 机器狗将四足动作改为对角步态相位驱动，FL/RR 同相、FR/RL 反相
+- [x] fallback 设备模型补轮式车轮旋转、人形摆臂迈腿、机器狗腿部和无人机旋翼动画
+- [x] 设置窗口多值设置改为分段选项组，不再用单个“切换”按钮循环承载
+- [x] 设置窗口行布局和分段选项支持换行，桌面和移动视口无横向溢出
+- [x] 终端日志默认自动滚动到底部，并在日志渲染后再次校正滚动位置
+- [x] 终端日志操作按钮增加 hover / focus tooltip，降低图标歧义
+- [x] 验证 `npm run typecheck`
+- [x] 验证 `npm run build`
+- [x] 验证 `cargo check --manifest-path src-tauri/Cargo.toml`
+- [x] Playwright 验证设置页无横向溢出、终端日志滚底和 tooltip 可见、工作动画 canvas 持续变化

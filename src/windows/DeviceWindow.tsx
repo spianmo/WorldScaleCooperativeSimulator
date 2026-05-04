@@ -1,7 +1,7 @@
 import { FiArrowLeft, FiMapPin, FiRotateCcw } from 'react-icons/fi';
 import { useTranslation } from 'react-i18next';
 import { Toolbar } from '../components/Toolbar';
-import { WorldScene } from '../components/WorldScene';
+import { WorldScene, mapDeviceTelemetryPosition } from '../components/WorldScene';
 import { TelemetryChart, type TelemetrySeries } from '../components/TelemetryChart';
 import { TerminalLog, type TerminalEntry } from '../components/TerminalLog';
 import { useSimulation } from '../state';
@@ -103,6 +103,20 @@ export function DeviceWindow({
       }));
   const devicePosition = (device?.telemetry.position ?? [1.8, 0.1, -0.4]) as [number, number, number];
   const deviceRotation = [0, device ? (device.telemetry.headingDeg / 180) * Math.PI : -0.4, 0] as [number, number, number];
+  const sceneDevicePosition = mapDeviceTelemetryPosition(devicePosition);
+  const headingRad = device ? (device.telemetry.headingDeg / 180) * Math.PI : -0.4;
+  const forward = [Math.cos(headingRad), 0, Math.sin(headingRad)] as [number, number, number];
+  const eyeHeight = device?.kind === 'drone' ? 0.62 : device?.kind === 'sensor_node' ? 0.34 : 0.92;
+  const cameraPosition = [
+    sceneDevicePosition[0] + forward[0] * 0.32,
+    sceneDevicePosition[1] + eyeHeight,
+    sceneDevicePosition[2] + forward[2] * 0.32,
+  ] as [number, number, number];
+  const cameraTarget = [
+    cameraPosition[0] + forward[0] * 5.2,
+    cameraPosition[1] - 0.08,
+    cameraPosition[2] + forward[2] * 5.2,
+  ] as [number, number, number];
 
   return (
     <div className="sim-page sim-page-grid">
@@ -126,15 +140,20 @@ export function DeviceWindow({
           <WorldScene
             deviceName={resolvedDeviceName}
             deviceKind={device?.kind}
-            devicePosition={devicePosition}
+            devicePosition={sceneDevicePosition}
             deviceRotation={deviceRotation}
-            cameraPosition={[6.8, 4.9, 6.8]}
+            cameraPosition={cameraPosition}
+            cameraTarget={cameraTarget}
+            cameraMode="first_person"
             worldLabel="World axes"
             deviceLabel={`${resolvedDeviceName} local axes`}
             minHeight="100%"
             objects={state.world.objects}
             devices={state.devices.filter((item) => item.id !== deviceId)}
+            weather={state.world.terrain}
             showAxes={state.world.coordinateSystemVisible}
+            hidePrimaryDevice
+            tickIntervalMs={state.settings.tickIntervalMs}
           />
           <TelemetryChart title={t('deviceWindow.telemetryTitle')} subtitle={t('deviceWindow.telemetrySubtitle')} unit="%" targetValue={75} series={resolvedTelemetry} />
         </div>

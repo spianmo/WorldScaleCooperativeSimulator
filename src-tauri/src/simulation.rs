@@ -114,6 +114,45 @@ fn default_device_name(kind: DeviceKind, index: usize) -> String {
     format!("{}-{}", prefix, index + 1)
 }
 
+fn climate_motion_scale(climate: Climate, kind: DeviceKind) -> f32 {
+    match climate {
+        Climate::Stormy => {
+            if kind == DeviceKind::Drone {
+                0.42
+            } else {
+                0.55
+            }
+        }
+        Climate::Rainy => {
+            if kind == DeviceKind::Drone {
+                0.78
+            } else {
+                0.72
+            }
+        }
+        Climate::Foggy => 0.86,
+        Climate::Windy => {
+            if kind == DeviceKind::Drone {
+                0.68
+            } else {
+                0.94
+            }
+        }
+        Climate::Cloudy | Climate::Clear => 1.0,
+    }
+}
+
+fn climate_wind_mps(climate: Climate) -> f32 {
+    match climate {
+        Climate::Stormy => 16.0,
+        Climate::Windy => 11.0,
+        Climate::Rainy => 6.0,
+        Climate::Cloudy => 4.0,
+        Climate::Foggy => 2.0,
+        Climate::Clear => 1.5,
+    }
+}
+
 pub fn update_settings(state: &mut SimulationState, patch: SettingsPatch) -> Result<SimulationState> {
     // 这里把设置更新收敛到单一入口，避免前端分别改 settings 和 rules 导致状态漂移。
     if let Some(value) = patch.app_name {
@@ -251,6 +290,7 @@ pub fn generate_world(state: &mut SimulationState, input: GenerateWorldInput) ->
         Climate::Rainy,
         Climate::Foggy,
         Climate::Windy,
+        Climate::Stormy,
     ]
     .choose(&mut rng)
     .unwrap_or(&Climate::Clear);
@@ -820,9 +860,13 @@ fn advance_task_and_device(state: &mut SimulationState, step_seconds: f32) {
                     device.updated_at = now();
                 }
             } else if let Some(device) = state.world.devices.iter_mut().find(|device| device.id == device_id) {
-                let step = device.physical_profile.max_speed_mps.max(0.1) * step_seconds.max(0.1);
-                device.position.x = (device.position.x + step).min(state.world.size.x);
-                device.position.z = (device.position.z + step * 0.45).min(state.world.size.z);
+                let weather_scale = climate_motion_scale(state.world.climate, device.kind);
+                let wind = climate_wind_mps(state.world.climate);
+                let step = device.physical_profile.max_speed_mps.max(0.1) * weather_scale * step_seconds.max(0.1);
+                let heading_rad = device.orientation_deg.to_radians();
+                let drift = if device.kind == DeviceKind::Drone { wind * 0.04 } else { wind * 0.006 } * step_seconds.max(0.1);
+                device.position.x = (device.position.x + heading_rad.cos() * step + drift).clamp(0.0, state.world.size.x);
+                device.position.z = (device.position.z + heading_rad.sin() * step + drift * 0.35).clamp(0.0, state.world.size.z);
                 if device.kind == DeviceKind::Drone {
                     device.position.y = device
                         .position
@@ -830,7 +874,8 @@ fn advance_task_and_device(state: &mut SimulationState, step_seconds: f32) {
                         .max(device.physical_profile.min_work_altitude_m)
                         .min(device.physical_profile.max_work_altitude_m);
                 }
-                device.orientation_deg = (device.orientation_deg + 8.0 * step_seconds) % 360.0;
+                let task_factor = (task.priority as f32).max(1.0);
+                device.orientation_deg = (device.orientation_deg + (5.0 + task_factor) * step_seconds) % 360.0;
                 device.updated_at = now();
             }
         } else {

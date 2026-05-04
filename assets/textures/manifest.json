@@ -16,7 +16,7 @@
       "source": "Generated locally",
       "source_url": "",
       "license": "project-generated",
-      "usage": "grass terrain material"
+      "usage": "fallback grass terrain material"
     },
     {
       "id": "concrete_procedural_1k",
@@ -25,8 +25,57 @@
       "source": "Generated locally",
       "source_url": "",
       "license": "project-generated",
-      "usage": "building material"
+      "usage": "fallback building material"
+    },
+    {
+      "id": "concrete_polyhaven_1k",
+      "name": "Concrete Diffuse 1K",
+      "path": "assets/textures/concrete_polyhaven_1k.jpg",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/concrete",
+      "download_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete/concrete_diff_1k.jpg",
+      "license": "CC0",
+      "usage": "paved surface and fallback concrete material"
+    },
+    {
+      "id": "facade001_glass_color_1k",
+      "name": "Facade001 Glass Color 1K",
+      "path": "assets/textures/facade001_glass_color_1k.jpg",
+      "source": "ambientCG",
+      "source_url": "https://ambientcg.com/view?id=Facade001",
+      "download_url": "https://ambientcg.com/get?file=Facade001_1K-JPG.zip",
+      "license": "CC0",
+      "usage": "modern glass office building facade material"
+    },
+    {
+      "id": "rectangular_facade_tiles_diff_1k",
+      "name": "Rectangular Facade Tiles Diffuse 1K",
+      "path": "assets/textures/rectangular_facade_tiles_diff_1k.jpg",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/rectangular_facade_tiles",
+      "download_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rectangular_facade_tiles/rectangular_facade_tiles_diff_1k.jpg",
+      "license": "CC0",
+      "usage": "modern facade source retained for alternate building material"
+    },
+    {
+      "id": "rectangular_facade_tiles_ao_1k",
+      "name": "Rectangular Facade Tiles Ambient Occlusion 1K",
+      "path": "assets/textures/rectangular_facade_tiles_ao_1k.jpg",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/rectangular_facade_tiles",
+      "download_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rectangular_facade_tiles/rectangular_facade_tiles_ao_1k.jpg",
+      "license": "CC0",
+      "usage": "AO companion map retained with alternate facade material; not wired into runtime material yet"
+    },
+    {
+      "id": "grass_rock_polyhaven_1k",
+      "name": "Aerial Grass Rock Diffuse 1K",
+      "path": "assets/textures/grass_rock_polyhaven_1k.jpg",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/aerial_grass_rock",
+      "download_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/aerial_grass_rock/aerial_grass_rock_diff_1k.jpg",
+      "license": "CC0",
+      "usage": "terrain and open-space material"
     }
   ]
 }
-
