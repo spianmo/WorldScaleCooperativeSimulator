@@ -164,16 +164,7 @@ export function ControlWindow({ telemetry = defaultTelemetry, logs = defaultLogs
                     <IconButton
                       icon={<FiSettings />}
                       label={t('controlWindow.openDevice', { name: device.name })}
-                      onClick={() =>
-                        void openWindow({
-                          label: `device-${device.id}`,
-                          kind: 'device',
-                          route: `/device/${device.id}`,
-                          title: t('controlWindow.deviceTitle', { name: device.name }),
-                          width: 1080,
-                          height: 780,
-                        })
-                      }
+                      onClick={() => appendLog({ level: 'info', scope: 'control', message: t('controlWindow.deviceTitle', { name: device.name }), details: device.id })}
                     />
                     <button type="button" onClick={() => removeDevice(device.id)} className="min-h-8 cursor-pointer rounded-[4px] border border-sim-danger-border bg-sim-danger-bg px-3 text-xs font-medium text-sim-danger">
                       {t('controlWindow.remove')}
@@ -197,16 +188,7 @@ export function ControlWindow({ telemetry = defaultTelemetry, logs = defaultLogs
                   key={task.id}
                   type="button"
                   className="sim-row flex w-full cursor-pointer justify-between gap-3 px-3 py-2.5 text-left"
-                  onClick={() =>
-                    void openWindow({
-                      label: `task-${task.id}`,
-                      kind: 'task',
-                      route: `/task/${task.id}`,
-                      title: t('controlWindow.taskTitle', { title: task.title }),
-                      width: 980,
-                      height: 720,
-                    })
-                  }
+                  onClick={() => appendLog({ level: 'info', scope: 'control', message: t('controlWindow.taskTitle', { title: task.title }), details: task.id })}
                 >
                   <span>{task.title}</span>
                   <span>{task.status} · {Math.round(task.progress * 100)}%</span>

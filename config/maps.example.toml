@@ -1,0 +1,15 @@
+# 复制为 config/maps.toml 后填写真实密钥；config/maps.toml 已加入 .gitignore。
+
+[google_maps]
+# Google Photorealistic 3D Tiles 主凭据。填写后不需要 PUBLIC_CESIUM_ION_TOKEN。
+api_key = ""
+
+# 可选：如果 api_key 为空，运行时会继续尝试读取该环境变量。
+api_key_env = "PUBLIC_GOOGLE_MAPS_API_KEY"
+
+[cesium_ion]
+# 可选备用：仅在没有 Google Maps API key 时，才尝试走 Cesium ion asset fallback。
+token = ""
+
+# 可选：如果 token 为空，运行时会继续尝试读取该环境变量。
+token_env = "PUBLIC_CESIUM_ION_TOKEN"

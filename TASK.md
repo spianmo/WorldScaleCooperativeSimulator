@@ -19,7 +19,7 @@
 
 - [x] 定义世界、设备、任务、规则、日志领域模型
 - [x] 实现 TOML 读写工具
-- [x] 实现随机世界生成
+- [x] 实现早期随机世界生成（已被阶段 11 在线 OpenStreetMap 渠道替换）
 - [x] 实现设备注册/移除
 - [x] 实现目标提交、任务拆解和高优先级打断
 - [x] 实现仿真 tick 推进
@@ -65,8 +65,8 @@
 - [x] 将窗口、面板、chip、输入框、按钮、图表改为 Apple 风格 token：纯色画布、弱边线、Action Blue
 - [x] 修复浅色/暗色主题切换：`SettingsWindow` -> Provider -> `update_settings` -> `html[data-theme]`
 - [x] 浏览器 fallback 的 `update_settings` 支持 `language`、`theme`、`auto_save`、`default_tick_seconds`、`log_level`
-- [x] Rust `generate_world` 改为连续城市数字孪生：路网、街区建筑、开放空间、城市中枢、能源补给点
-- [x] 浏览器 fallback `generate_world` 同步改为连续城市数字孪生
+- [x] Rust `generate_world` 早期改为连续城市数字孪生（已被阶段 11 在线 OpenStreetMap 渠道替换）
+- [x] 浏览器 fallback `generate_world` 早期同步为连续城市数字孪生（已被阶段 11 在线 OpenStreetMap 渠道替换）
 - [x] 3D 世界渲染按连续城市对象重映射道路、建筑、地标比例
 - [x] 验证 `npm run typecheck`
 - [x] 验证 `npm run build`
@@ -150,3 +150,22 @@
 - [x] 验证 `npm run build`
 - [x] 验证 `cargo check --manifest-path src-tauri/Cargo.toml`
 - [x] Playwright 验证设置页无横向溢出、终端日志滚底和 tooltip 可见、工作动画 canvas 持续变化
+
+## 阶段 11：移除离线地图生成，只保留在线 3D 地图渠道
+
+- [x] 删除 Rust 离线街区生成函数，`generate_world` 只走在线 OpenStreetMap / Nominatim / Overpass
+- [x] 删除浏览器 preview 的本地程序化地图生成，改为在线拉取 OSM 数据后生成 3D 道路、建筑和兴趣点
+- [x] 新建世界窗口移除在线开关、本地离线瓦片和离线模拟文案，数据源固定为 OpenStreetMap
+- [x] 默认世界不再构造本地程序化道路和建筑，启动态等待在线 OpenStreetMap 数据
+- [x] PRD 移除离线兜底承诺，明确在线数据失败时展示错误并重试
+
+## 阶段 12：参考设计图实现创建世界 Dialog
+
+- [x] 对照 `DESIGN_create_world.png` 重构 `CreateWorldWindow` 为居中的创建世界 dialog
+- [x] 创建世界 dialog 保留在线 OpenStreetMap 创建链路，提交仍调用 `generateWorld(input)`
+- [x] 增加 TerminalLink 品牌区、地图选择区、区域选择框、视图切换、地图指标、世界设置、数据图层和底部步骤操作
+- [x] 补齐桌面三列布局和移动单列滚动布局，移动端 footer 与创建按钮可滚动到达
+- [x] Playwright 验证 1536x1024 桌面和 390x844 移动端无横向溢出、关键元素存在、无 console error
+- [x] 验证 `npm run typecheck`
+- [x] 验证 `npm run build`
+- [x] 验证 `git diff --check`

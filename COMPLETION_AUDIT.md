@@ -23,8 +23,8 @@
 | 浅/暗主题切换生效 | `App.tsx:23-26` 写入 `html[data-theme]`；`theme.css:1-92` 定义 light/dark 变量 |
 | 主题设置持久化路径 | `SimulationProvider.tsx:125-160` 调用 `invokeUpdateAppSettings`；`simulation.ts:569-579` 发送 `update_settings` patch |
 | 浏览器 fallback 支持主题 patch | `browserFallback.ts:461-512` 处理 `theme`、`language`、`auto_save`、`default_tick_seconds`、`log_level` |
-| 生成世界连续 | `simulation.rs:260-374` 先生成连续道路网，再布置街区建筑、开放空间、城市中枢和能源补给站 |
-| 浏览器 fallback 世界连续 | `browserFallback.ts:119-228` 生成连续城市路网、街区建筑、开放空间、中枢和能源节点 |
+| 生成世界连续 | 历史证据已被第 11 节在线 OpenStreetMap 世界生成替换，不再保留本地连续城市生成 |
+| 浏览器 fallback 世界连续 | 历史证据已被第 11 节在线 OpenStreetMap 世界生成替换，不再保留本地连续城市生成 |
 | 3D 渲染连续城市 | `WorldScene.tsx:39-78` 根据 road/building/landmark 做比例映射和材质渲染 |
 | 仍保留数字孪生场景语义 | 生成对象包含 `urban_grid`、`continuous`、`digital_twin`、`digital_twin_core` tags |
 | 真实验证 | 下方命令与 Playwright 输出 |
@@ -35,8 +35,8 @@
 - `App.tsx`：路由渲染时把 `state.settings.theme.mode` 写入 `document.documentElement.dataset.theme`，把 locale 写入 `lang`。
 - `SimulationProvider.tsx` / `simulation.ts` / `browserFallback.ts`：主题、语言、设置通过 `update_settings` 真实进入 Tauri/fallback 状态。
 - `Toolbar.tsx`、`IconButton.tsx`、`TelemetryChart.tsx`、`TerminalLog.tsx`、各窗口：去掉旧深色渐变和玻璃风格，改成 Apple 风格纯色画布和弱边线。
-- `simulation.rs`：Rust 生成逻辑从随机散点改成连续城市路网和街区。
-- `browserFallback.ts`：preview 生成逻辑同步为连续城市数字孪生。
+- `simulation.rs`：Rust 生成逻辑曾从随机散点改成连续城市路网和街区；当前已由第 11 节替换为在线 OpenStreetMap 生成。
+- `browserFallback.ts`：preview 生成逻辑曾同步为连续城市数字孪生；当前已由第 11 节替换为在线 OpenStreetMap 生成。
 - `WorldScene.tsx`：道路、建筑、地标按城市场景比例映射，避免散点观感。
 
 ## 4. 验证命令
@@ -125,7 +125,7 @@ node /private/tmp/worldsim-ui-check.mjs
     "textColor": "rgb(245, 247, 250)"
   },
   "generatedWorld": {
-    "description": "浏览器 fallback 生成的连续城市场景数字孪生世界。",
+    "description": "历史验证输出：浏览器 fallback 当时生成连续城市场景数字孪生世界；当前实现已替换为在线 OpenStreetMap。",
     "objectCount": 64,
     "roads": 14,
     "buildings": 36,
@@ -691,3 +691,405 @@ npx rsbuild preview --host 127.0.0.1 --port 1442
 
 - G1 / Go2 当前是基于已接入几何部件的轻量工作动画，不是 URDF 关节控制器、逆运动学或物理碰撞仿真。
 - Playwright 覆盖 web preview；Tauri 原生多窗口视觉回归未单独启动验证。
+
+## 11. 离线地图生成移除审计
+
+### 11.1 本轮目标
+
+用户本轮目标：
+
+> 完全移除离线地图生成，只保留在线3D地图渠道。
+
+拆成验收标准：
+
+1. Rust/Tauri 世界创建不能再调用本地离线街区生成。
+2. 浏览器 preview fallback 不能再程序化生成离线道路、建筑和街区。
+3. 新建世界 UI 不能再提供离线地图、离线瓦片或关闭在线数据的入口。
+4. 默认世界不能再用本地离线街区填充地图对象。
+5. PRD/TASK 不能继续承诺离线地图兜底。
+6. 在线 OpenStreetMap 拉取失败必须显式失败，而不是退回离线生成。
+
+### 11.2 产物清单
+
+| 明确要求 | 证据 |
+| --- | --- |
+| Rust 只保留在线渠道 | `simulation.rs#generate_world()` 校验数据源为 `OpenStreetMap`，随后调用 `fetch_osm_street_dataset(...)`；失败返回 `在线 OpenStreetMap 数据拉取失败` |
+| 移除 Rust 离线地图函数 | 已删除 `build_offline_street_world(...)` 和对应单元测试 |
+| Browser fallback 只走在线渠道 | `browserFallback.ts#createGeneratedWorld()` 调用 `fetchOsmWorldObjects(...)`；Nominatim/Overpass 失败直接 throw |
+| UI 移除离线入口 | `CreateWorldWindow.tsx` 数据源固定 OpenStreetMap，已移除在线开关和 `Local Tiles` 选项 |
+| 默认世界不生成离线街区 | `rust-state.ts#createDefaultWorldSnapshot()` 的 `objects: []`；`World::terminal_link_default()` 不再调用 `default_city_objects()` |
+| 文档移除离线兜底 | `ProjectPRD.md` 明确网络、地理编码或 OSM 数据失败时不得生成本地街区替代数据 |
+
+### 11.3 验证结果
+
+```bash
+rg -n "offline_simulation|offline_fallback|offline_demo|online_osm_requested|build_offline|use_online_osm|useOnlineOsm|Local Tiles|createDefaultCityObjects|default_city_objects|browser fallback uses procedural|offline fallback" src src-tauri ProjectPRD.md TASK.md COMPLETION_AUDIT.md --glob '!src-tauri/target/**' --glob '!node_modules/**'
+```
+
+结果：只有本节审计表中“已删除项”的说明命中，代码和 PRD/TASK 无离线地图生成入口残留。
+
+```bash
+npm run typecheck
+```
+
+结果：通过，退出码 `0`。
+
+```bash
+npm run build
+```
+
+结果：通过，退出码 `0`，输出 `dist/index.html`、`dist/static/css/index.7a1906f8.css`、`dist/static/js/index.e16e7792.js` 等产物。
+
+```bash
+cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+结果：通过，退出码 `0`，输出 `Finished dev profile`。
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+结果：通过，退出码 `0`；`simulation::tests::overpass_node_without_geometry_uses_lat_lon` 通过，`1 passed; 0 failed`。
+
+```bash
+npx rsbuild preview --host 127.0.0.1 --port 1448
+```
+
+Playwright 回归使用拦截的 Nominatim / Overpass 在线响应验证浏览器链路。关键输出：
+
+```json
+{
+  "result": {
+    "statusText": "已创建实景世界：解放路实景街区",
+    "objectCount": 6,
+    "metadata": {
+      "data_source": "OpenStreetMap",
+      "data_status": "online_osm",
+      "building_count": "3",
+      "road_count": "2",
+      "poi_count": "1"
+    },
+    "sources": ["openstreetmap"],
+    "offlineMentions": false
+  },
+  "requests": [
+    {
+      "url": "https://overpass-api.de/api/interpreter",
+      "method": "POST",
+      "bodyIncludesHighway": true
+    }
+  ],
+  "consoleEntries": []
+}
+```
+
+说明：本机直接访问 Nominatim 曾出现 20s 超时，因此未声明公网 OSM 实时服务可达；本轮验证覆盖的是前端只走在线接口、消费 OSM 响应并且不退回离线生成。
+
+## 12. 创建世界 Dialog 视觉实现审计
+
+### 12.1 本轮目标
+
+用户本轮目标：
+
+> 参考 Image #1 实现创建世界的 dialog。
+
+拆成验收标准：
+
+1. 创建世界入口要呈现为参考图同类的大尺寸白色 dialog，而不是旧页面表单。
+2. Dialog 顶部要有 TerminalLink 品牌、标题、副标题和关闭按钮。
+3. 主体要包含区域搜索/地图、世界设置、数据图层三块信息。
+4. 底部要包含取消、步骤条、预览世界、创建世界。
+5. 不能恢复离线地图、本地瓦片或关闭在线数据的入口；创建仍走在线 OpenStreetMap。
+6. 桌面和移动视口不能出现横向溢出，移动端底部操作必须可滚动到达。
+
+### 12.2 产物清单
+
+| 明确要求 | 证据 |
+| --- | --- |
+| Dialog 结构 | `CreateWorldWindow.tsx` 使用 `.create-world-dialog` 和 `role="dialog"` 作为主容器 |
+| 品牌与标题 | `CreateWorldWindow.tsx` 引入 `terminal-logo-mark.png`，渲染 `TerminalLink`、`新建世界` 和 OpenStreetMap 副标题 |
+| 地图选择区 | `CreateWorldWindow.tsx` 引入 `terminal-map-reference.png`，提供搜索框、放大、缩小、定位、区域选择框、视图 tab 和地图指标 |
+| 世界设置 | `CreateWorldWindow.tsx` 渲染世界名称、描述、坐标系、世界时间、地形数据源、环境预设和滑杆设置 |
+| 数据图层 | `CreateWorldWindow.tsx` 渲染基础图层、语义图层、3D 增强和数据说明 |
+| 在线创建链路 | `CreateWorldWindow.tsx#submit()` 组装 `data_source: 'OpenStreetMap'`，继续调用 `generateWorld(input)` |
+| 桌面/移动布局 | `tailwind.css` 新增 `.create-world-dialog-*` 样式和 `@media (max-width: 960px)` 下的单列滚动布局 |
+
+### 12.3 验证结果
+
+```bash
+npm run typecheck
+```
+
+结果：通过，退出码 `0`。
+
+```bash
+npm run build
+```
+
+结果：通过，退出码 `0`。
+
+```bash
+git diff --check
+```
+
+结果：通过，退出码 `0`。
+
+```bash
+npx rsbuild preview --host 127.0.0.1 --port 1452
+```
+
+Playwright 回归访问 `http://127.0.0.1:1452/#/create-world`，截图输出到 `/private/tmp/worldsim-create-world-dialog-qa/`。关键输出：
+
+```json
+[
+  {
+    "viewport": { "name": "desktop", "width": 1536, "height": 1024 },
+    "metrics": {
+      "title": "新建世界",
+      "hasDialogRole": true,
+      "hasBrand": true,
+      "hasSubtitle": true,
+      "hasDataSourceField": true,
+      "hasMapTools": true,
+      "hasLayers": true,
+      "hasFooterActions": true,
+      "bodyScrollWidth": 1536,
+      "docClientWidth": 1536,
+      "footerVisible": true,
+      "createButtonVisible": true
+    },
+    "consoleEntries": [],
+    "badResponses": []
+  },
+  {
+    "viewport": { "name": "mobile", "width": 390, "height": 844 },
+    "metrics": {
+      "title": "新建世界",
+      "hasDialogRole": true,
+      "hasBrand": true,
+      "hasSubtitle": true,
+      "hasDataSourceField": true,
+      "hasMapTools": true,
+      "hasLayers": true,
+      "hasFooterActions": true,
+      "bodyScrollWidth": 390,
+      "docClientWidth": 390,
+      "pageScrollTop": 2314,
+      "pageScrollHeight": 3158,
+      "pageClientHeight": 844,
+      "footerVisible": true,
+      "createButtonVisible": true
+    },
+    "consoleEntries": [],
+    "badResponses": []
+  }
+]
+```
+
+说明：本轮只验证创建世界 dialog 的前端结构、响应式布局和在线创建入口保留；未触发真实公网 OpenStreetMap 请求。
+
+---
+
+## 13. Google Photorealistic 3D Tiles + CesiumJS 替换审计
+
+### 13.1 本轮目标
+
+用户本轮目标：
+
+> 直接修改为 Google Photorealistic 3D Tiles + CesiumJS 实现，不要再使用 R3F 沙盘版本，不要保留对老模式的兼容。
+
+拆成验收标准：
+
+1. 中间虚拟空间渲染入口不再使用 R3F、Three、`Canvas` 或旧沙盘组件。
+2. 新渲染入口直接使用 CesiumJS，并调用 `createGooglePhotorealistic3DTileset(...)` 加载 Google Photorealistic 3D Tiles。
+3. 街道/POI/设备叠加继续落在同一个真实地理坐标系中，而不是回到旧本地沙盘坐标。
+4. 依赖层移除 `@react-three/drei`、`@react-three/fiber`、`three`、`@types/three`。
+5. 构建链路不再因为 Cesium 顶层入口拖入 KML/zip 导出链路而失败。
+6. 没有 Google Maps/Cesium ion 凭证时，页面给出明确配置提示，不再用默认 token 触发无意义 401。
+7. 通过真实 `typecheck`、`build`、残留扫描、浏览器运行时烟测验证。
+
+### 13.2 Prompt 到产物清单
+
+| 明确要求 | 证据 |
+| --- | --- |
+| 使用 CesiumJS 渲染 | `WorldScene.tsx:24-25` 精确导入 `createGooglePhotorealistic3DTileset` 和 `CesiumWidget`；`WorldScene.tsx:469-478` 创建 `CesiumWidget` |
+| 使用 Google Photorealistic 3D Tiles | `WorldScene.tsx:517-539` 调用 `createGooglePhotorealistic3DTileset(...)` 并加入 `widget.scene.primitives` |
+| 不再使用 R3F/Three 沙盘 | `rg -n "@react-three|from 'three'|from \"three\"|useGLTF|useFrame|useLoader|<Canvas|meshStandardMaterial|planeGeometry|boxGeometry|R3F|沙盘" src package.json package-lock.json rsbuild.config.ts -S` 无输出 |
+| 移除 R3F/Three direct deps | `package.json:15-24` 只保留 `@cesium/engine`、`cesium` 等依赖；`npm ls @react-three/drei @react-three/fiber three @types/three @cesium/widgets --depth=0` 输出 `empty` |
+| 不保留老模式导出 | `components/index.ts:1-5` 不再导出 `Scene` / `AxesIndicator`；两者仅保留非 R3F 占位，不再包含 Three JSX |
+| 地理坐标叠加 | `WorldScene.tsx:112-159` 从 metadata/对象解析 WGS84 中心并把旧 telemetry offset 映射到经纬度；`WorldScene.tsx:215-278` 叠加 OSM road/polyline 与 POI |
+| 设备叠加 | `WorldScene.tsx:281-329` 用 Cesium entity/model/billboard/label 表示设备；无人机继续挂载 DJI glb |
+| Cesium 静态资源 | `rsbuild.config.ts:9-16` 复制 `node_modules/cesium/Build/Cesium` 到 `dist/cesium`；`WorldScene.tsx:459` 设置 `buildModuleUrl` base 为 `./cesium/` |
+| 缺凭证提示 | `WorldScene.tsx:70-72` 定义 key/token 变量名；`WorldScene.tsx:504-515` 缺凭证时显示明确提示并不发 tiles 请求 |
+| Cesium Source 子路径类型 | `assets.d.ts:51-154` 声明 env 与 Cesium `Source/.../*.js` 子路径类型，避免回退顶层 `cesium` 聚合入口 |
+
+说明：`@cesium/widgets` 在 `package-lock.json` 中仍作为 `cesium` 聚合包的传递依赖出现，但它不是 `package.json` direct dependency，源码也没有导入 `@cesium/widgets`。
+
+### 13.3 验证命令
+
+```bash
+git diff --check
+```
+
+结果：通过，退出码 `0`。
+
+```bash
+npm run typecheck
+```
+
+结果：通过，退出码 `0`。
+
+```bash
+npm run build
+```
+
+结果：通过，退出码 `0`。本轮已修复之前的：
+
+```text
+Package subpath './lib/zip-no-worker.js' is not defined by "exports"
+```
+
+修复方式：`WorldScene.tsx` 不再从 `cesium` 顶层聚合入口导入运行时代码，改为 `@cesium/engine/Source/...` 精确导入，避免 Rspack 追入 `KmlDataSource/exportKml`。
+
+```bash
+rg -n "@react-three|from 'three'|from \"three\"|useGLTF|useFrame|useLoader|<Canvas|meshStandardMaterial|planeGeometry|boxGeometry|R3F|沙盘" \
+  src package.json package-lock.json rsbuild.config.ts -S
+```
+
+结果：无输出，`rg` 退出码 `1`。
+
+```bash
+npm ls @react-three/drei @react-three/fiber three @types/three @cesium/widgets --depth=0
+```
+
+结果：输出 `└── (empty)`，退出码 `1`，表示这些包不是顶层安装依赖。
+
+### 13.4 Playwright 运行时烟测
+
+preview 启动：
+
+```bash
+npm run preview
+```
+
+`1420` 被占用，Rsbuild 自动使用：
+
+```text
+http://127.0.0.1:1421/
+```
+
+Playwright 访问：
+
+```bash
+http://127.0.0.1:1421/#/world
+```
+
+关键输出：
+
+```json
+{
+  "title": "World Scale Cooperative Simulator",
+  "textHasCredentialMessage": true,
+  "textHasGoogleTiles": true,
+  "hasCesiumWidget": true,
+  "hasCesiumScene": true,
+  "hasR3fCanvasMarker": false,
+  "canvases": [
+    {
+      "index": 0,
+      "cssSize": { "width": 554, "height": 459 },
+      "bufferSize": { "width": 554, "height": 459 }
+    }
+  ],
+  "badResponses": []
+}
+```
+
+控制台只有 Playwright/WebGL 读像素触发的 `GPU stall due to ReadPixels` 性能 warning；没有页面错误或 4xx/5xx 响应。
+
+### 13.5 残余风险
+
+- 本机当前未配置 `PUBLIC_GOOGLE_MAPS_API_KEY` 或 `PUBLIC_CESIUM_ION_TOKEN`，因此无法声明真实 Google tiles 网络加载成功；已验证缺凭证时不会再发默认 token 401，并会显示明确配置提示。
+- Playwright 验证覆盖 web preview 的 `#/world` 路由；Tauri 原生窗口中真实 Google tiles 加载仍依赖同一前端 bundle 和本地环境变量注入，未单独跑 `tauri dev`。
+
+## 14. `config/maps.toml` 地图凭据读取审计
+
+### 14.1 本轮目标
+
+用户本轮追加目标：
+
+> 将 `PUBLIC_GOOGLE_MAPS_API_KEY` 凭据也通过 `config` 目录下的 toml 配置文件读取，我已经申请好 key 了，另外 `PUBLIC_CESIUM_ION_TOKEN` 是必须的吗
+
+拆成验收标准：
+
+1. Google Maps API key 能从 `config/maps.toml` 读取，而不是只能从前端 `import.meta.env` 读取。
+2. 配置文件放在项目 `config` 目录下，并提供不含真实 key 的 example。
+3. 仍保留环境变量兜底，便于 web preview 和 CI smoke。
+4. 前端 Cesium 场景优先使用 Tauri 运行时下发的配置 key。
+5. `PUBLIC_CESIUM_ION_TOKEN` 被定义为可选 fallback，不再作为必填项。
+6. 跨窗口状态同步不把真实地图凭据写入 `localStorage`。
+
+### 14.2 Prompt 到产物清单
+
+| 明确要求 | 证据 |
+| --- | --- |
+| 通过 `config` TOML 读取 Google Maps key | `storage.rs:53-114` 新增 `load_map_settings_from_project_config(...)`，候选路径包含项目根 `config/maps.toml` |
+| Tauri 启动时注入配置 | `lib.rs:30-35` 在 `AppStore::load(...)` 中读取 map settings 并写入 `state.settings.maps` |
+| Rust 配置模型 | `models.rs:140` 在 `Settings` 挂载 `maps`；`models.rs:191-236` 定义 `MapProviderSettings` / `GoogleMapsSettings` / `CesiumIonSettings` |
+| 不提交真实 key | `.gitignore:5` 忽略 `config/maps.toml`；`config/maps.example.toml` 只提供空模板 |
+| 前端接收配置 | `simulation.ts:194-204` 声明 Rust settings maps 字段；`simulation.ts:594-603` 映射到 UI `SimulationSettings.maps` |
+| Cesium 场景优先使用配置 key | `WorldScene.tsx:53-54` 新增 props；`WorldScene.tsx:99-110` 先读 props，再 fallback 到 `import.meta.env` |
+| 世界/眼镜/设备窗口传入配置 | `WorldWindow.tsx:645-646`、`GlassesWindow.tsx:129-130`、`DeviceWindow.tsx:155-156` 传入 `state.settings.maps` |
+| Cesium ion token 非必填 | `WorldScene.tsx:74` 缺凭据提示写明 `PUBLIC_CESIUM_ION_TOKEN` 仅为可选备用；`config/maps.example.toml:11-15` 把 token 标为 optional fallback |
+| 同步脱敏 | `windowSync.ts:34-58` 发布跨窗口消息前移除 `apiKey` / `token`；`SimulationProvider.tsx:91-102` 从本窗口已加载配置恢复凭据 |
+| 状态保存脱敏 | `storage.rs:123-131` 写入 `app_state.toml` 前清空 LLM、Google Maps、Cesium ion 运行时凭据 |
+
+### 14.3 Cesium 官方行为依据
+
+CesiumJS 官方文档对 `createGooglePhotorealistic3DTileset(...)` 的 `apiOptions.key` 描述为：
+
+```text
+Your API key to access Google Photorealistic 3D Tiles
+```
+
+默认值为 `GoogleMaps.defaultApiKey`。本仓实际安装源码 `createGooglePhotorealistic3DTileset.js:72-93` 也显示：有 `key` 时直接请求 Google Map Tiles API；没有 `key` 时才调用 `requestCachedIonTileset(...)` 走 Cesium ion asset fallback。
+
+因此当前配置结论是：`PUBLIC_CESIUM_ION_TOKEN` 不是必填项；已填写 Google Maps API key 时，Google Photorealistic 3D Tiles 主链路不依赖 Cesium ion token。
+
+### 14.4 验证结果
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml storage::tests
+```
+
+结果：通过，退出码 `0`。覆盖：
+
+- `storage::tests::load_map_settings_reads_maps_toml_from_config_dir`
+- `storage::tests::save_state_to_path_redacts_runtime_credentials`
+
+```bash
+git diff --check
+```
+
+结果：通过，退出码 `0`。
+
+```bash
+npm run typecheck
+```
+
+结果：通过，退出码 `0`。
+
+```bash
+cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+结果：通过，退出码 `0`，输出 `Finished dev profile`。
+
+```bash
+npm run build
+```
+
+结果：通过，退出码 `0`，输出 `ready built in 3.05 s`。
+
+说明：本轮没有把用户真实 Google Maps API key 写入仓库；真实 tiles 网络加载仍取决于本机 `config/maps.toml` 中的有效 key 和 Google Map Tiles API 授权状态。

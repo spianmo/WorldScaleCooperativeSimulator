@@ -1,12 +1,13 @@
 import type { DeviceKind, DevicePhysicalProfile, SimulationDevice, SimulationState } from '../types';
 import { tx } from '../i18n';
 
-export const deviceKinds: DeviceKind[] = ['wheeled_robot', 'humanoid', 'quadruped', 'drone', 'sensor_node'];
+export const deviceKinds: DeviceKind[] = ['wheeled_robot', 'humanoid', 'quadruped', 'unitree_robot', 'drone', 'sensor_node'];
 
 export const deviceKindLabels: Record<DeviceKind, string> = {
   wheeled_robot: tx('device.kind.wheeled_robot'),
   humanoid: tx('device.kind.humanoid'),
   quadruped: tx('device.kind.quadruped'),
+  unitree_robot: tx('device.kind.unitree_robot'),
   drone: tx('device.kind.drone'),
   sensor_node: tx('device.kind.sensor_node'),
 };
@@ -55,6 +56,19 @@ export function defaultProfile(kind: DeviceKind, rules: SimulationState['physica
     };
   }
 
+  if (kind === 'unitree_robot') {
+    return {
+      minWorkAltitudeM: 0,
+      maxWorkAltitudeM: 1.4,
+      maxSlopeDeg: rules.quadrupedMaxSlopeDeg,
+      supportedMaterials: [...rules.groundAllowedMaterials],
+      nominalPowerW: 32,
+      workingPowerW: 200,
+      maxSpeedMps: 2.4,
+      jointCount: 12,
+    };
+  }
+
   if (kind === 'sensor_node') {
     return {
       minWorkAltitudeM: 0,
@@ -91,9 +105,11 @@ export function createDevice(kind: DeviceKind, index: number, profile: DevicePhy
       ? ['aerial_move', 'photo', 'search']
       : kind === 'quadruped'
         ? ['ground_move', 'inspect', 'rough_terrain']
-        : kind === 'sensor_node'
-          ? ['sense', 'report']
-          : ['ground_move', 'inspect', 'transport'],
+        : kind === 'unitree_robot'
+          ? ['ground_move', 'inspect', 'rough_terrain', 'payload']
+          : kind === 'sensor_node'
+            ? ['sense', 'report']
+            : ['ground_move', 'inspect', 'transport'],
     physicalProfile: profile,
     telemetry: {
       position: [Math.random() * 20, kind === 'drone' ? 8 : 0, Math.random() * 20],

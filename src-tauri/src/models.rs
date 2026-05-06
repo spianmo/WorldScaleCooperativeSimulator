@@ -30,6 +30,7 @@ pub enum DeviceKind {
     Drone,
     Humanoid,
     Quadruped,
+    UnitreeRobot,
     SensorHub,
     ChargingBase,
 }
@@ -91,6 +92,7 @@ pub enum WorldObjectKind {
     ResourceNode,
     Boundary,
     Waypoint,
+    Water,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -136,6 +138,7 @@ pub struct Settings {
     pub terminal_log_density: String,
     pub map_notes: String,
     pub llm: LlmSettings,
+    pub maps: MapProviderSettings,
 }
 
 impl Default for Settings {
@@ -157,6 +160,7 @@ impl Default for Settings {
             terminal_log_density: "normal".to_string(),
             map_notes: "仿真世界默认配置".to_string(),
             llm: LlmSettings::default(),
+            maps: MapProviderSettings::default(),
         }
     }
 }
@@ -180,6 +184,56 @@ impl Default for LlmSettings {
             model: "gpt-5.4".to_string(),
             api_key: None,
             api_key_env: "OPENCLAUDECODE_API_KEY".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MapProviderSettings {
+    pub google_maps: GoogleMapsSettings,
+    pub cesium_ion: CesiumIonSettings,
+}
+
+impl Default for MapProviderSettings {
+    fn default() -> Self {
+        Self {
+            google_maps: GoogleMapsSettings::default(),
+            cesium_ion: CesiumIonSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GoogleMapsSettings {
+    #[serde(default)]
+    pub api_key: Option<String>,
+    pub api_key_env: String,
+}
+
+impl Default for GoogleMapsSettings {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            api_key_env: "PUBLIC_GOOGLE_MAPS_API_KEY".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CesiumIonSettings {
+    #[serde(default)]
+    pub token: Option<String>,
+    pub token_env: String,
+}
+
+impl Default for CesiumIonSettings {
+    fn default() -> Self {
+        Self {
+            token: None,
+            token_env: "PUBLIC_CESIUM_ION_TOKEN".to_string(),
         }
     }
 }
@@ -420,7 +474,11 @@ impl Default for DevicePhysicalProfile {
             min_work_altitude_m: 0.0,
             max_work_altitude_m: 2.0,
             max_slope_deg: 12.0,
-            supported_materials: vec!["asphalt".to_string(), "concrete".to_string(), "grass".to_string()],
+            supported_materials: vec![
+                "asphalt".to_string(),
+                "concrete".to_string(),
+                "grass".to_string(),
+            ],
             nominal_power_w: 12.0,
             working_power_w: 64.0,
             max_speed_mps: 1.0,
@@ -601,7 +659,7 @@ pub struct World {
 
 impl Default for World {
     fn default() -> Self {
-        Self::new("默认世界", 42, Vector3::new(120.0, 80.0, 120.0))
+        Self::terminal_link_default()
     }
 }
 
@@ -626,6 +684,243 @@ impl World {
             updated_at: now,
         }
     }
+
+    pub fn terminal_link_default() -> Self {
+        let mut world = Self::new(
+            "在线 OpenStreetMap 实景世界",
+            42,
+            Vector3::new(120.0, 80.0, 120.0),
+        );
+        world.climate = Climate::Clear;
+        world.terrain = TerrainProfile::Urban;
+        let devices = default_terminal_devices(&world.rules.physical);
+        let work = default_goal_and_tasks(&devices);
+        world.devices = devices;
+        world.goals = vec![work.0];
+        world.tasks = work.1;
+        world.logs = vec![
+            LogEntry {
+                scope: "bootstrap".to_string(),
+                message: "TerminalLink 单仪表盘初始化完成。".to_string(),
+                ..LogEntry::default()
+            },
+            LogEntry {
+                scope: "gateway".to_string(),
+                message: "群体智能网关已载入默认巡检目标。".to_string(),
+                ..LogEntry::default()
+            },
+        ];
+        world
+    }
+}
+
+fn physical_profile(
+    kind: DeviceKind,
+    rules: &PhysicalRules,
+    nominal_power_w: f32,
+    working_power_w: f32,
+    max_speed_mps: f32,
+    joint_count: u8,
+) -> DevicePhysicalProfile {
+    let (min_work_altitude_m, max_work_altitude_m, max_slope_deg, supported_materials) = match kind
+    {
+        DeviceKind::Drone => (
+            rules.drone_min_altitude_m,
+            rules.drone_max_altitude_m,
+            90.0,
+            vec!["air".to_string()],
+        ),
+        DeviceKind::Humanoid => (
+            0.0,
+            2.4,
+            rules.humanoid_max_slope_deg,
+            rules.ground_allowed_materials.clone(),
+        ),
+        DeviceKind::Quadruped | DeviceKind::UnitreeRobot => (
+            0.0,
+            1.4,
+            rules.quadruped_max_slope_deg,
+            rules.ground_allowed_materials.clone(),
+        ),
+        DeviceKind::Rover => (
+            0.0,
+            1.2,
+            rules.rover_max_slope_deg,
+            vec!["asphalt".into(), "concrete".into(), "packed_soil".into()],
+        ),
+        DeviceKind::SensorHub | DeviceKind::ChargingBase => {
+            (0.0, 4.0, 8.0, rules.ground_allowed_materials.clone())
+        }
+    };
+
+    DevicePhysicalProfile {
+        min_work_altitude_m,
+        max_work_altitude_m,
+        max_slope_deg,
+        supported_materials,
+        nominal_power_w,
+        working_power_w,
+        max_speed_mps,
+        joint_count,
+    }
+}
+
+fn terminal_device(
+    name: &str,
+    kind: DeviceKind,
+    status: DeviceStatus,
+    position: Vector3,
+    orientation_deg: f32,
+    battery: f32,
+    profile: DevicePhysicalProfile,
+    capabilities: Vec<&str>,
+) -> Device {
+    Device {
+        name: name.to_string(),
+        kind,
+        status,
+        position,
+        orientation_deg,
+        battery,
+        physical_profile: profile,
+        capabilities: capabilities.into_iter().map(str::to_string).collect(),
+        ..Device::default()
+    }
+}
+
+fn default_terminal_devices(rules: &PhysicalRules) -> Vec<Device> {
+    vec![
+        terminal_device(
+            "DJI Mavic 3E",
+            DeviceKind::Drone,
+            DeviceStatus::Working,
+            Vector3::new(120.5, 80.3, 85.6),
+            42.0,
+            78.0,
+            physical_profile(DeviceKind::Drone, rules, 36.0, 180.0, 12.0, 4),
+            vec!["aerial_move", "photo", "search", "mapping"],
+        ),
+        terminal_device(
+            "Autel EVO Max 4T",
+            DeviceKind::Drone,
+            DeviceStatus::Idle,
+            Vector3::new(98.2, 76.1, 12.5),
+            110.0,
+            63.0,
+            physical_profile(DeviceKind::Drone, rules, 38.0, 190.0, 11.0, 4),
+            vec!["aerial_move", "thermal", "mapping"],
+        ),
+        terminal_device(
+            "Unitree Go2",
+            DeviceKind::UnitreeRobot,
+            DeviceStatus::Working,
+            Vector3::new(45.3, 22.8, 0.3),
+            265.0,
+            52.0,
+            physical_profile(DeviceKind::UnitreeRobot, rules, 30.0, 180.0, 2.2, 12),
+            vec!["ground_move", "inspect", "rough_terrain"],
+        ),
+        terminal_device(
+            "Unitree B2",
+            DeviceKind::UnitreeRobot,
+            DeviceStatus::Idle,
+            Vector3::new(15.6, 35.2, 0.3),
+            188.0,
+            91.0,
+            physical_profile(DeviceKind::UnitreeRobot, rules, 34.0, 220.0, 2.6, 12),
+            vec!["ground_move", "payload", "rough_terrain"],
+        ),
+        terminal_device(
+            "Walker X",
+            DeviceKind::Humanoid,
+            DeviceStatus::Working,
+            Vector3::new(32.1, 18.7, 0.0),
+            28.0,
+            68.0,
+            physical_profile(DeviceKind::Humanoid, rules, 42.0, 260.0, 1.4, 24),
+            vec!["ground_move", "inspect", "delivery"],
+        ),
+        terminal_device(
+            "Wheeled Robot W3",
+            DeviceKind::Rover,
+            DeviceStatus::Idle,
+            Vector3::new(12.8, 44.3, 0.0),
+            340.0,
+            55.0,
+            physical_profile(DeviceKind::Rover, rules, 18.0, 90.0, 2.0, 4),
+            vec!["ground_move", "inspect", "transport"],
+        ),
+        terminal_device(
+            "DJI Matrice 30T",
+            DeviceKind::Drone,
+            DeviceStatus::Idle,
+            Vector3::new(86.4, 58.0, 46.2),
+            76.0,
+            84.0,
+            physical_profile(DeviceKind::Drone, rules, 44.0, 220.0, 12.0, 4),
+            vec!["aerial_move", "thermal", "zoom", "mapping"],
+        ),
+        terminal_device(
+            "Sensor Hub A1",
+            DeviceKind::SensorHub,
+            DeviceStatus::Idle,
+            Vector3::new(62.5, 28.5, 0.2),
+            0.0,
+            100.0,
+            physical_profile(DeviceKind::SensorHub, rules, 6.0, 14.0, 0.0, 0),
+            vec!["sense", "thermal", "report"],
+        ),
+    ]
+}
+
+fn default_goal_and_tasks(devices: &[Device]) -> (Goal, Vec<Task>) {
+    let mut goal = Goal {
+        title: "巡检解放路沿线建筑".to_string(),
+        description: "对连续城市街区进行多设备协同巡检。".to_string(),
+        requested_by: "gateway".to_string(),
+        keywords: vec!["巡检".into(), "协同".into(), "街区".into()],
+        status: GoalStatus::Active,
+        priority: 8,
+        ..Goal::default()
+    };
+    let mut tasks = vec![
+        Task {
+            goal_id: goal.id,
+            title: "UAV 高空扫描".to_string(),
+            description: "DJI Mavic 3E 对目标区域执行航测扫描。".to_string(),
+            keywords: vec!["inspect".into(), "photo".into()],
+            status: TaskStatus::InProgress,
+            progress: 0.75,
+            assignee_device_id: devices.get(0).map(|device| device.id),
+            ..Task::default()
+        },
+        Task {
+            goal_id: goal.id,
+            title: "地面近距热测".to_string(),
+            description: "Unitree Go2 对低矮遮挡区执行近距巡检。".to_string(),
+            keywords: vec!["inspect".into(), "thermal".into()],
+            status: TaskStatus::InProgress,
+            progress: 0.48,
+            assignee_device_id: devices.get(2).map(|device| device.id),
+            ..Task::default()
+        },
+        Task {
+            goal_id: goal.id,
+            title: "复杂动作验证".to_string(),
+            description: "Walker X 进入人类可达区域做交互验证。".to_string(),
+            keywords: vec!["observe".into(), "humanoid".into()],
+            status: TaskStatus::Assigned,
+            progress: 0.0,
+            assignee_device_id: devices.get(4).map(|device| device.id),
+            ..Task::default()
+        },
+    ];
+    goal.task_ids = tasks.iter().map(|task| task.id).collect();
+    for task in &mut tasks {
+        task.priority = goal.priority;
+        task.estimated_ticks = 6;
+    }
+    (goal, tasks)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -687,6 +982,13 @@ pub struct GenerateWorldInput {
     pub seed: Option<u64>,
     pub size: Option<Vector3>,
     pub object_density: Option<f32>,
+    pub street_address: Option<String>,
+    pub district: Option<String>,
+    pub center_lat: Option<f64>,
+    pub center_lon: Option<f64>,
+    pub radius_m: Option<f32>,
+    pub data_source: Option<String>,
+    pub preview_quality: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

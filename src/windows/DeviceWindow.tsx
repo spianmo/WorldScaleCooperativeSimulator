@@ -129,7 +129,7 @@ export function DeviceWindow({
         ]}
       >
         <span className="sim-chip">DeviceWindow</span>
-        <span className="sim-chip">Local Axes</span>
+        <span className="sim-chip">Cesium 3D Tiles</span>
         <span className="sim-chip">ID: {deviceId}</span>
       </Toolbar>
 
@@ -145,8 +145,6 @@ export function DeviceWindow({
             cameraPosition={cameraPosition}
             cameraTarget={cameraTarget}
             cameraMode="first_person"
-            worldLabel="World axes"
-            deviceLabel={`${resolvedDeviceName} local axes`}
             minHeight="100%"
             objects={state.world.objects}
             devices={state.devices.filter((item) => item.id !== deviceId)}
@@ -154,6 +152,8 @@ export function DeviceWindow({
             showAxes={state.world.coordinateSystemVisible}
             hidePrimaryDevice
             tickIntervalMs={state.settings.tickIntervalMs}
+            googleMapsApiKey={state.settings.maps.googleMaps.apiKey}
+            cesiumIonToken={state.settings.maps.cesiumIon.token}
           />
           <TelemetryChart title={t('deviceWindow.telemetryTitle')} subtitle={t('deviceWindow.telemetrySubtitle')} unit="%" targetValue={75} series={resolvedTelemetry} />
         </div>

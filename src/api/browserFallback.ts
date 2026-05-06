@@ -173,109 +173,346 @@ function weatherPhysics(weather: WorldSnapshot['terrain']['weather']) {
   };
 }
 
-function createGeneratedWorld(args: BrowserInvokeArgs): WorldSnapshot {
-  const current = readStoredState();
-  const input = args && typeof args === 'object' && args.input && typeof args.input === 'object'
-    ? (args.input as { name?: string; seed?: number; object_density?: number })
-    : {};
-  const timestamp = nowIso();
-  const density = input.object_density ?? 0.2;
-  const blocksPerAxis = Math.max(4, Math.min(8, Math.round(4 + density * 8)));
-  const spacing = 100 / blocksPerAxis;
-  const objects: WorldObject[] = [];
-  const weather = ['sunny', 'cloudy', 'rainy', 'foggy', 'windy', 'stormy'][Math.floor(Math.random() * 6)] as WorldSnapshot['terrain']['weather'];
-  const roadNames = ['解放路', '中轴大道', '滨河路', '科创街', '人民路', '站前大道', '新华路', '云栖路'];
-  const buildingNames = ['新华大厦', '城市运行中心', '数字孪生塔', '能源调度站', '市民服务楼', '轨交换乘楼'];
+interface BrowserOsmPoint {
+  lat: number;
+  lon: number;
+}
 
-  for (let index = 0; index <= blocksPerAxis; index += 1) {
-    const coord = index * spacing;
-    objects.push({
-      id: randomId('road-x'),
-      kind: 'road_segment',
-      name: `${roadNames[index % roadNames.length]}-东西向`,
-      description: '连续城市路网主干道，承载地面设备巡检和任务路径规划。',
-      position: [50, 0, coord],
-      rotation: [0, 0, 0],
-      scale: [104, 0.2, 2.8],
-      materialId: 'mat-asphalt',
-      tags: ['road_segment', 'urban_grid', 'continuous'],
-    });
-    objects.push({
-      id: randomId('road-z'),
-      kind: 'road_segment',
-      name: `${roadNames[(index + 3) % roadNames.length]}-南北向`,
-      description: '连续城市路网支路，和主干道形成网格拓扑。',
-      position: [coord, 0, 50],
-      rotation: [0, Math.PI / 2, 0],
-      scale: [104, 0.2, 2.8],
-      materialId: 'mat-asphalt',
-      tags: ['road_segment', 'urban_grid', 'continuous'],
-    });
+interface BrowserNominatimPlace {
+  lat: string;
+  lon: string;
+  display_name: string;
+}
+
+interface BrowserOverpassElement {
+  id: number;
+  type: string;
+  lat?: number;
+  lon?: number;
+  tags?: Record<string, string>;
+  geometry?: BrowserOsmPoint[];
+}
+
+interface BrowserOverpassResponse {
+  elements?: BrowserOverpassElement[];
+}
+
+function lonLatToWorld(lon: number, lat: number, centerLon: number, centerLat: number, radiusM: number): [number, number] {
+  const metersPerLat = 111_320;
+  const metersPerLon = Math.max(0.2, Math.abs(Math.cos((centerLat / 180) * Math.PI))) * 111_320;
+  const dxM = (lon - centerLon) * metersPerLon;
+  const dzM = (lat - centerLat) * metersPerLat;
+  const scale = 100 / (radiusM * 2);
+  const x = Math.max(0, Math.min(100, 50 + dxM * scale));
+  const z = Math.max(0, Math.min(100, 50 - dzM * scale));
+  return [x, z];
+}
+
+function geometryBBox(points: BrowserOsmPoint[]) {
+  if (!points.length) {
+    return undefined;
   }
 
-  for (let x = 0; x < blocksPerAxis; x += 1) {
-    for (let z = 0; z < blocksPerAxis; z += 1) {
-      const centerX = x * spacing + spacing / 2;
-      const centerZ = z * spacing + spacing / 2;
-      const district = (x + z) % buildingNames.length;
-      const height = 10 + ((x * 7 + z * 11) % 36);
-      objects.push({
-        id: randomId('building'),
-        kind: 'building',
-        name: `${buildingNames[district]}-${x + 1}-${z + 1}`,
-        description: '数字孪生城市场景建筑单元，和路网保持连续空间关系。',
-        position: [centerX, 0, centerZ],
-        rotation: [0, 0, 0],
-        scale: [Math.max(5, spacing * 0.36), height, Math.max(5, spacing * 0.36)],
-        materialId: 'mat-concrete',
-        tags: ['building', 'city_block', 'digital_twin'],
-      });
+  return points.reduce(
+    (bbox, point) => ({
+      minLat: Math.min(bbox.minLat, point.lat),
+      maxLat: Math.max(bbox.maxLat, point.lat),
+      minLon: Math.min(bbox.minLon, point.lon),
+      maxLon: Math.max(bbox.maxLon, point.lon),
+    }),
+    {
+      minLat: points[0].lat,
+      maxLat: points[0].lat,
+      minLon: points[0].lon,
+      maxLon: points[0].lon,
+    },
+  );
+}
 
-      if ((x + z) % 3 === 0) {
-        objects.push({
-          id: randomId('plaza'),
-          kind: 'terrain_patch',
-          name: `城市开放空间-${x + 1}-${z + 1}`,
-          description: '可通行的广场或绿地，用作设备协同会合与观测区域。',
-          position: [centerX + spacing * 0.24, 0, centerZ - spacing * 0.24],
-          rotation: [0, 0, 0],
-          scale: [Math.max(3, spacing * 0.22), 0.2, Math.max(3, spacing * 0.22)],
-          materialId: 'mat-grass',
-          tags: ['terrain_patch', 'plaza', 'walkable'],
-        });
-      }
+function parseOsmHeightM(tags: Record<string, string>, fallback: number) {
+  const height = Number.parseFloat(tags.height?.replace(/m$/i, '').trim() ?? '');
+  if (Number.isFinite(height)) {
+    return Math.max(3, Math.min(120, height));
+  }
+
+  const levels = Number.parseFloat(tags['building:levels'] ?? '');
+  if (Number.isFinite(levels)) {
+    return Math.max(3, Math.min(120, levels * 3.2));
+  }
+
+  return fallback;
+}
+
+function overpassElementToWorldObject(element: BrowserOverpassElement, centerLat: number, centerLon: number, radiusM: number): WorldObject | undefined {
+  const tags = element.tags ?? {};
+  const hasHighway = Boolean(tags.highway);
+  const hasBuilding = Boolean(tags.building);
+  const hasGreen = Boolean(tags.leisure) || tags.landuse === 'grass' || tags.landuse === 'park';
+  const hasWater = tags.natural === 'water';
+  const hasPoi = Boolean(tags.amenity) || Boolean(tags.shop) || Boolean(tags.tourism);
+
+  if (!hasHighway && !hasBuilding && !hasGreen && !hasWater && !hasPoi) {
+    return undefined;
+  }
+
+  const points = element.geometry?.length
+    ? element.geometry
+    : typeof element.lat === 'number' && typeof element.lon === 'number'
+      ? [{ lat: element.lat, lon: element.lon }]
+      : [];
+  const bbox = geometryBBox(points);
+  if (!bbox) {
+    return undefined;
+  }
+
+  const centerPoint = {
+    lat: (bbox.minLat + bbox.maxLat) / 2,
+    lon: (bbox.minLon + bbox.maxLon) / 2,
+  };
+  const [centerX, centerZ] = lonLatToWorld(centerPoint.lon, centerPoint.lat, centerLon, centerLat, radiusM);
+  const [minX, minZ] = lonLatToWorld(bbox.minLon, bbox.maxLat, centerLon, centerLat, radiusM);
+  const [maxX, maxZ] = lonLatToWorld(bbox.maxLon, bbox.minLat, centerLon, centerLat, radiusM);
+  const width = Math.max(2.2, Math.abs(maxX - minX));
+  const depth = Math.max(2.2, Math.abs(maxZ - minZ));
+  const fallbackName = hasHighway
+    ? 'OpenStreetMap 道路'
+    : hasBuilding
+      ? 'OpenStreetMap 建筑'
+      : hasPoi
+        ? 'OpenStreetMap 兴趣点'
+        : 'OpenStreetMap 图层';
+  const name = tags.name ?? `${fallbackName} ${element.id}`;
+  const properties: Record<string, string> = {
+    source: 'openstreetmap',
+    source_name: 'OpenStreetMap',
+    osm_id: String(element.id),
+    osm_type: element.type,
+    lat: centerPoint.lat.toFixed(6),
+    lon: centerPoint.lon.toFixed(6),
+  };
+
+  for (const key of ['name', 'highway', 'building', 'amenity', 'shop', 'tourism', 'landuse', 'leisure', 'natural', 'height', 'building:levels']) {
+    const value = tags[key];
+    if (value) {
+      properties[`osm_tag_${key}`] = value;
     }
   }
 
-  objects.push({
-    id: randomId('landmark'),
-    kind: 'landmark',
-    name: '城市数字孪生中枢',
-    description: '城市级群体智能调度与反馈中心。',
+  if (hasHighway) {
+    const first = points[0];
+    const last = points[points.length - 1];
+    const [firstX, firstZ] = lonLatToWorld(first.lon, first.lat, centerLon, centerLat, radiusM);
+    const [lastX, lastZ] = lonLatToWorld(last.lon, last.lat, centerLon, centerLat, radiusM);
+    const dx = lastX - firstX;
+    const dz = lastZ - firstZ;
+    const orientationRad = Math.atan2(dz, dx);
+    const length = Math.max(3, Math.hypot(dx, dz), width, depth);
+    properties.material = 'asphalt';
+    properties.orientation_rad = String(orientationRad);
+    return {
+      id: randomId('osm-road'),
+      kind: 'road_segment',
+      name,
+      description: 'OpenStreetMap 在线道路数据，作为真实街区可通行路径。',
+      position: [centerX, 0, centerZ],
+      rotation: [0, orientationRad, 0],
+      scale: [length, 0.2, 3.2],
+      materialId: 'mat-asphalt',
+      tags: ['road_segment', 'osm', 'real_street'],
+      properties,
+    };
+  }
+
+  if (hasBuilding) {
+    const height = parseOsmHeightM(tags, 14 + (Math.abs(element.id) % 12) * 2.2);
+    properties.material = 'concrete';
+    properties.height_m = height.toFixed(1);
+    return {
+      id: randomId('osm-building'),
+      kind: 'building',
+      name,
+      description: 'OpenStreetMap 在线建筑轮廓拉伸形成的 3D 建筑体量。',
+      position: [centerX, 0, centerZ],
+      rotation: [0, 0, 0],
+      scale: [Math.max(3, width), height, Math.max(3, depth)],
+      materialId: 'mat-concrete',
+      tags: ['building', 'osm', 'real_street'],
+      properties,
+    };
+  }
+
+  properties.material = hasWater ? 'water' : 'grass';
+  return {
+    id: randomId(hasPoi ? 'osm-poi' : 'osm-terrain'),
+    kind: hasPoi ? 'landmark' : hasWater ? 'water' : 'terrain_patch',
+    name,
+    description: hasPoi ? 'OpenStreetMap 在线兴趣点。' : 'OpenStreetMap 在线地表语义图层。',
+    position: [centerX, 0, centerZ],
+    rotation: [0, 0, 0],
+    scale: [Math.max(2.4, width), hasPoi ? 8 : 0.2, Math.max(2.4, depth)],
+    materialId: hasWater ? 'mat-water' : 'mat-grass',
+    tags: ['osm', hasPoi ? 'poi' : 'terrain_patch'],
+    properties,
+  };
+}
+
+async function fetchOsmWorldObjects(streetAddress: string, centerLatInput: number | undefined, centerLonInput: number | undefined, radiusM: number) {
+  let centerLat = centerLatInput;
+  let centerLon = centerLonInput;
+  let displayName = streetAddress;
+
+  if (typeof centerLat !== 'number' || typeof centerLon !== 'number') {
+    const searchUrl = new URL('https://nominatim.openstreetmap.org/search');
+    searchUrl.searchParams.set('format', 'jsonv2');
+    searchUrl.searchParams.set('limit', '1');
+    searchUrl.searchParams.set('q', streetAddress);
+    const response = await fetch(searchUrl, { headers: { Accept: 'application/json' } });
+    if (!response.ok) {
+      throw new Error(`Nominatim HTTP ${response.status}`);
+    }
+    const places = await response.json() as BrowserNominatimPlace[];
+    const place = places[0];
+    if (!place) {
+      throw new Error(`Nominatim 未找到地点：${streetAddress}`);
+    }
+    centerLat = Number.parseFloat(place.lat);
+    centerLon = Number.parseFloat(place.lon);
+    displayName = place.display_name;
+  }
+
+  if (!Number.isFinite(centerLat) || !Number.isFinite(centerLon)) {
+    throw new Error('街区中心经纬度无效');
+  }
+
+  const query = `
+    [out:json][timeout:18];
+    (
+      way["highway"](around:${Math.round(radiusM)},${centerLat},${centerLon});
+      way["building"](around:${Math.round(radiusM)},${centerLat},${centerLon});
+      relation["building"](around:${Math.round(radiusM)},${centerLat},${centerLon});
+      way["leisure"~"park|garden"](around:${Math.round(radiusM)},${centerLat},${centerLon});
+      way["landuse"~"grass|park|recreation_ground"](around:${Math.round(radiusM)},${centerLat},${centerLon});
+      way["natural"="water"](around:${Math.round(radiusM)},${centerLat},${centerLon});
+      node["amenity"](around:${Math.round(radiusM)},${centerLat},${centerLon});
+      node["shop"](around:${Math.round(radiusM)},${centerLat},${centerLon});
+      node["tourism"](around:${Math.round(radiusM)},${centerLat},${centerLon});
+    );
+    out geom 160;
+  `;
+  const overpassResponse = await fetch('https://overpass-api.de/api/interpreter', {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'text/plain;charset=UTF-8' },
+    body: query,
+  });
+  if (!overpassResponse.ok) {
+    throw new Error(`Overpass HTTP ${overpassResponse.status}`);
+  }
+
+  const overpass = await overpassResponse.json() as BrowserOverpassResponse;
+  const objects = (overpass.elements ?? [])
+    .map((element) => overpassElementToWorldObject(element, centerLat, centerLon, radiusM))
+    .filter((object): object is WorldObject => Boolean(object))
+    .sort((left, right) => {
+      const rank = (object: WorldObject) => object.kind === 'road_segment' ? 0 : object.kind === 'building' ? 1 : 2;
+      return rank(left) - rank(right);
+    })
+    .slice(0, 180);
+
+  const roadCount = objects.filter((object) => object.kind === 'road_segment').length;
+  const buildingCount = objects.filter((object) => object.kind === 'building' || object.kind === 'landmark').length;
+  if (roadCount < 2 || buildingCount < 2) {
+    throw new Error('Overpass 返回的道路或建筑数量不足');
+  }
+
+  return {
+    centerLat,
+    centerLon,
+    displayName,
+    objects,
+    roadCount,
+    buildingCount,
+    poiCount: objects.filter((object) => object.tags.includes('poi')).length,
+  };
+}
+
+async function createGeneratedWorld(args: BrowserInvokeArgs): Promise<WorldSnapshot> {
+  const current = readStoredState();
+  const input = args && typeof args === 'object' && args.input && typeof args.input === 'object'
+    ? (args.input as {
+        name?: string;
+        seed?: number;
+        object_density?: number;
+        street_address?: string;
+        district?: string;
+        center_lat?: number;
+        center_lon?: number;
+        radius_m?: number;
+        data_source?: string;
+      })
+    : {};
+  const timestamp = nowIso();
+  const streetAddress = input.street_address?.trim() || '解放路城市演示街区';
+  const district = input.district?.trim() || '示范行政区';
+  const radiusM = Math.max(120, Math.min(3000, input.radius_m ?? 500));
+  const dataSource = input.data_source?.trim() || 'OpenStreetMap';
+  if (!/^openstreetmap$/i.test(dataSource)) {
+    throw new Error(`只支持在线 OpenStreetMap 3D 地图渠道，当前数据源不受支持：${dataSource}`);
+  }
+  const weather = 'sunny' as WorldSnapshot['terrain']['weather'];
+  const dataset = await fetchOsmWorldObjects(streetAddress, input.center_lat, input.center_lon, radiusM);
+  const objects = [...dataset.objects];
+
+  objects.unshift({
+    id: randomId('metadata'),
+    kind: 'boundary',
+    name: `${streetAddress} 元数据`,
+    description: `指定街道 3D 建筑街景：${streetAddress}，中心 ${dataset.centerLat.toFixed(6)},${dataset.centerLon.toFixed(6)}，半径 ${radiusM}m，来源 ${dataSource}。`,
     position: [50, 0, 50],
     rotation: [0, 0, 0],
-    scale: [8, 54, 8],
-    materialId: 'mat-concrete',
-    tags: ['landmark', 'digital_twin_core'],
-  });
-  objects.push({
-    id: randomId('charging'),
-    kind: 'charging_pad',
-    name: '城市能源补给站',
-    description: '无人机、轮式机器人和机器狗的统一充电与补给节点。',
-    position: [spacing, 0, spacing],
-    rotation: [0, 0, 0],
-    scale: [8, 0.3, 8],
-    materialId: 'mat-concrete',
-    tags: ['charging_pad', 'energy_node', 'interactive'],
+    scale: [100, 0.05, 100],
+    materialId: 'mat-grass',
+    tags: ['world_metadata', 'real_street', 'osm'],
+    properties: {
+      world_metadata: 'true',
+      description: `指定街道 3D 建筑街景：${streetAddress}，中心 ${dataset.centerLat.toFixed(6)},${dataset.centerLon.toFixed(6)}，半径 ${radiusM}m，来源 ${dataSource}。`,
+      street_address: streetAddress,
+      district,
+      center_lat: dataset.centerLat.toFixed(6),
+      center_lon: dataset.centerLon.toFixed(6),
+      radius_m: String(Math.round(radiusM)),
+      data_source: dataSource,
+      data_status: 'online_osm',
+      source: 'openstreetmap',
+      osm_display_name: dataset.displayName,
+      building_count: String(dataset.buildingCount),
+      road_count: String(dataset.roadCount),
+      poi_count: String(dataset.poiCount),
+      license: 'OpenStreetMap contributors / ODbL',
+      created_by: 'TerminalLink browser fallback',
+      created_at: timestamp,
+    },
   });
 
   return {
     ...current.world,
     id: randomId('world'),
-    name: input.name ?? '连续城市数字孪生',
-    description: '浏览器 fallback 生成的连续城市场景数字孪生世界。',
+    name: input.name ?? `${streetAddress} 实景世界`,
+    description: `指定街道 3D 建筑街景：${streetAddress}，中心 ${dataset.centerLat.toFixed(6)},${dataset.centerLon.toFixed(6)}，半径 ${radiusM}m。`,
     seed: String(input.seed ?? Date.now()),
+    metadata: {
+      street_address: streetAddress,
+      district,
+      center_lat: dataset.centerLat.toFixed(6),
+      center_lon: dataset.centerLon.toFixed(6),
+      radius_m: String(Math.round(radiusM)),
+      data_source: dataSource,
+      data_status: 'online_osm',
+      osm_display_name: dataset.displayName,
+      building_count: String(dataset.buildingCount),
+      road_count: String(dataset.roadCount),
+      poi_count: String(dataset.poiCount),
+      license: 'OpenStreetMap contributors / ODbL',
+    },
     terrain: {
       slopeDeg: 4,
       weather,
@@ -534,10 +771,20 @@ function registerDefaultHandlers() {
   });
   browserHandlers.set('generate_world', (args) => {
     const currentState = readStoredState();
-    const nextWorld = createGeneratedWorld(args);
-    const nextState = replaceWorldInState(currentState, nextWorld);
-    writeStoredState(nextState);
-    return cloneState(nextState);
+    return createGeneratedWorld(args).then((nextWorld) => {
+      const nextState = {
+        ...replaceWorldInState(currentState, nextWorld),
+        logs: currentState.logs.concat(
+          createSimulationLogEntry({
+            level: 'info',
+            scope: 'world',
+            message: `浏览器 fallback 已创建在线实景世界：${nextWorld.name}，来源 ${nextWorld.metadata?.data_source ?? 'OpenStreetMap'}`,
+          }),
+        ),
+      };
+      writeStoredState(nextState);
+      return cloneState(nextState);
+    });
   });
   browserHandlers.set('register_device', (args) => {
     const currentState = readStoredState();

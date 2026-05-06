@@ -1,16 +1,16 @@
-mod models;
 mod llm;
+mod models;
 mod simulation;
 mod storage;
 
 use anyhow::Context;
+use chrono::Utc;
 use llm::{LlmIntentRequest, LlmStreamLog, LlmStreamLogLevel};
 use models::{
-    Device, GenerateWorldInput, OpenWorldSnapshotInput, RegisterDeviceInput, SaveSnapshotInput,
-    LogEntry, LogLevel, SavedPath, SettingsPatch, SimulationState, SubmitGoalInput, TickInput,
+    Device, GenerateWorldInput, LogEntry, LogLevel, OpenWorldSnapshotInput, RegisterDeviceInput,
+    SaveSnapshotInput, SavedPath, SettingsPatch, SimulationState, SubmitGoalInput, TickInput,
     WorldSnapshotRecord,
 };
-use chrono::Utc;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -29,6 +29,9 @@ impl AppStore {
         let mut state = storage::load_state_from_path(&state_path)?;
         if let Some(llm_settings) = storage::load_llm_settings_from_project_config(&data_dir)? {
             state.settings.llm = llm_settings;
+        }
+        if let Some(map_settings) = storage::load_map_settings_from_project_config(&data_dir)? {
+            state.settings.maps = map_settings;
         }
         Ok(Self {
             state: Mutex::new(state),
@@ -62,7 +65,10 @@ where
     Ok(next_state)
 }
 
-fn persist_next_state(store: &State<'_, AppStore>, next_state: SimulationState) -> Result<SimulationState, String> {
+fn persist_next_state(
+    store: &State<'_, AppStore>,
+    next_state: SimulationState,
+) -> Result<SimulationState, String> {
     if next_state.settings.auto_save {
         store
             .persist(&next_state)
@@ -112,15 +118,18 @@ fn llm_log_level(level: LlmStreamLogLevel) -> LogLevel {
 }
 
 fn append_llm_logs(state: &mut SimulationState, logs: Vec<LlmStreamLog>) {
-    state.world.logs.extend(logs.into_iter().map(|log| LogEntry {
-        id: Uuid::new_v4(),
-        timestamp: Utc::now(),
-        level: llm_log_level(log.level),
-        scope: "llm_sse".to_string(),
-        message: log.message,
-        entity_id: None,
-        context: BTreeMap::new(),
-    }));
+    state
+        .world
+        .logs
+        .extend(logs.into_iter().map(|log| LogEntry {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            level: llm_log_level(log.level),
+            scope: "llm_sse".to_string(),
+            message: log.message,
+            entity_id: None,
+            context: BTreeMap::new(),
+        }));
 }
 
 #[tauri::command]
@@ -133,7 +142,10 @@ fn load_state(store: State<'_, AppStore>) -> Result<SimulationState, String> {
 }
 
 #[tauri::command]
-fn save_state(store: State<'_, AppStore>, state: SimulationState) -> Result<SimulationState, String> {
+fn save_state(
+    store: State<'_, AppStore>,
+    state: SimulationState,
+) -> Result<SimulationState, String> {
     store.persist(&state).map_err(|error| error.to_string())?;
     let mut guard = store
         .state
@@ -144,16 +156,27 @@ fn save_state(store: State<'_, AppStore>, state: SimulationState) -> Result<Simu
 }
 
 #[tauri::command]
-fn update_settings(store: State<'_, AppStore>, patch: SettingsPatch) -> Result<SimulationState, String> {
+fn update_settings(
+    store: State<'_, AppStore>,
+    patch: SettingsPatch,
+) -> Result<SimulationState, String> {
     with_state(&store, |state| simulation::update_settings(state, patch))
 }
 
 #[tauri::command]
-fn generate_world(
+async fn generate_world(
     store: State<'_, AppStore>,
     input: GenerateWorldInput,
 ) -> Result<SimulationState, String> {
-    with_state(&store, |state| simulation::generate_world(state, input))
+    let mut next_state = store
+        .state
+        .lock()
+        .map_err(|_| "仿真状态锁已被污染".to_string())?
+        .clone();
+    simulation::generate_world(&mut next_state, input)
+        .await
+        .map_err(|error| error.to_string())?;
+    persist_next_state(&store, next_state)
 }
 
 #[tauri::command]
@@ -170,7 +193,10 @@ fn remove_device(store: State<'_, AppStore>, device_id: Uuid) -> Result<Simulati
 }
 
 #[tauri::command]
-async fn submit_goal(store: State<'_, AppStore>, input: SubmitGoalInput) -> Result<SimulationState, String> {
+async fn submit_goal(
+    store: State<'_, AppStore>,
+    input: SubmitGoalInput,
+) -> Result<SimulationState, String> {
     let (llm_settings, device_summary) = {
         let guard = store
             .state
@@ -208,7 +234,10 @@ async fn submit_goal(store: State<'_, AppStore>, input: SubmitGoalInput) -> Resu
     } else {
         (
             None,
-            Some("LLM agents 未启用；请在 config/llm.toml 设置 enabled = true 并填写 api_key".to_string()),
+            Some(
+                "LLM agents 未启用；请在 config/llm.toml 设置 enabled = true 并填写 api_key"
+                    .to_string(),
+            ),
             vec![LlmStreamLog {
                 level: LlmStreamLogLevel::Warn,
                 message: "LLM SSE 未启动：LLM agents 未启用".to_string(),
@@ -230,7 +259,10 @@ async fn submit_goal(store: State<'_, AppStore>, input: SubmitGoalInput) -> Resu
 }
 
 #[tauri::command]
-fn tick_simulation(store: State<'_, AppStore>, input: TickInput) -> Result<SimulationState, String> {
+fn tick_simulation(
+    store: State<'_, AppStore>,
+    input: TickInput,
+) -> Result<SimulationState, String> {
     with_state(&store, |state| simulation::tick_simulation(state, input))
 }
 
@@ -250,7 +282,13 @@ fn save_world_snapshot(
         .snapshot_name
         .unwrap_or_else(|| format!("world_{}", state.world.id))
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
     let path = snapshot_dir.join(format!("{safe_name}.toml"));
     storage::save_world_snapshot_to_path(&path, &state).map_err(|error| error.to_string())?;
@@ -274,7 +312,13 @@ fn open_world_snapshot(
         let safe_name = input
             .snapshot_name
             .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' { ch } else { '_' })
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
             .collect::<String>();
         let path = snapshot_dir.join(format!("{safe_name}.toml"));
         let world = storage::load_world_snapshot_from_path(&path)?;
@@ -286,10 +330,7 @@ fn open_world_snapshot(
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .context("获取应用数据目录失败")?;
+            let data_dir = app.path().app_data_dir().context("获取应用数据目录失败")?;
             let store = AppStore::load(data_dir)?;
             app.manage(store);
             Ok(())

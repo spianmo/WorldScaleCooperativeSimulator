@@ -3,8 +3,8 @@ export const SUPPORTED_LOCALES = ['zh-CN', 'en-US'] as const;
 export const SIMULATION_WINDOW_KINDS = [
   'world',
   'control',
-  'device',
   'glasses',
+  'device',
   'task',
   'settings',
   'create_world',
@@ -16,6 +16,7 @@ export const DEVICE_KINDS = [
   'wheeled_robot',
   'humanoid',
   'quadruped',
+  'unitree_robot',
   'sensor_node',
 ] as const;
 
@@ -68,6 +69,18 @@ export interface SimulationSettings {
   autosaveEnabled: boolean;
   tickIntervalMs: number;
   terminalLogDensity: 'compact' | 'normal' | 'verbose';
+  maps: MapProviderSettings;
+}
+
+export interface MapProviderSettings {
+  googleMaps: {
+    apiKey?: string;
+    apiKeyEnv: string;
+  };
+  cesiumIon: {
+    token?: string;
+    tokenEnv: string;
+  };
 }
 
 export interface PhysicalRules {
@@ -97,6 +110,7 @@ export interface WorldObject {
   scale: Vector3Tuple;
   materialId?: string;
   tags: string[];
+  properties?: Record<string, string>;
 }
 
 export interface WorldSnapshot {
@@ -104,6 +118,7 @@ export interface WorldSnapshot {
   name: string;
   description: string;
   seed: string;
+  metadata?: Record<string, string>;
   coordinateSystemVisible: boolean;
   terrain: {
     slopeDeg: number;
@@ -256,13 +271,17 @@ function createDefaultWorldSnapshot(): WorldSnapshot {
 
   return {
     id: 'world-default',
-    name: '默认物理世界',
-    description: '用于前端基础层联调的默认世界快照。',
+    name: '在线 OpenStreetMap 实景世界',
+    description: '默认主仪表盘等待在线 OpenStreetMap 数据加载；系统不再生成离线街区地图。',
     seed: 'seed-0001',
     coordinateSystemVisible: true,
     terrain: {
-      slopeDeg: 2,
+      slopeDeg: 4,
       weather: 'sunny',
+      precipitationMmH: 0,
+      windMps: 3.2,
+      visibilityM: 1600,
+      surfaceFrictionScale: 1,
     },
     materials: [
       {
@@ -279,19 +298,362 @@ function createDefaultWorldSnapshot(): WorldSnapshot {
         friction: 0.78,
         tags: ['structure', 'ground'],
       },
+      {
+        id: 'mat-grass',
+        name: '绿地',
+        color: '#4f8a5b',
+        friction: 0.64,
+        tags: ['terrain', 'ground'],
+      },
     ],
     objects: [],
+    metadata: {
+      data_source: 'OpenStreetMap',
+      data_status: 'online_osm_required',
+      street_address: '等待选择在线街区',
+      center_lat: '',
+      center_lon: '',
+      radius_m: '',
+    },
     createdAt: timestamp,
     updatedAt: timestamp,
   };
 }
 
+function createDefaultDevices(timestamp: string): SimulationDevice[] {
+  const sharedPhysicalMaterials = ['asphalt', 'concrete', 'grass', 'packed_soil'];
+  return [
+    {
+      id: 'default-dji-mavic-3e',
+      kind: 'drone',
+      name: 'DJI Mavic 3E',
+      status: 'working',
+      capabilityTags: ['aerial_move', 'photo', 'search', 'mapping'],
+      physicalProfile: {
+        minWorkAltitudeM: 3,
+        maxWorkAltitudeM: 60,
+        maxSlopeDeg: 90,
+        supportedMaterials: ['air'],
+        nominalPowerW: 36,
+        workingPowerW: 180,
+        maxSpeedMps: 12,
+        jointCount: 4,
+      },
+      currentTaskId: 'default-task-uav-scan',
+      telemetry: {
+        position: [120.5, 80.3, 85.6],
+        velocity: [8.2, 0, 4.1],
+        headingDeg: 42,
+        batteryPercent: 78,
+        powerW: 168,
+        signalStrength: 96,
+        temperatureC: 31,
+        speedMps: 11.2,
+        jointAnglesDeg: [0, 0, 0, 0],
+        jointQuaternion: [0, 0, 0, 1],
+        lastSeenAt: timestamp,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    {
+      id: 'default-autel-evo-max',
+      kind: 'drone',
+      name: 'Autel EVO Max 4T',
+      status: 'idle',
+      capabilityTags: ['aerial_move', 'thermal', 'mapping'],
+      physicalProfile: {
+        minWorkAltitudeM: 3,
+        maxWorkAltitudeM: 60,
+        maxSlopeDeg: 90,
+        supportedMaterials: ['air'],
+        nominalPowerW: 38,
+        workingPowerW: 190,
+        maxSpeedMps: 11,
+        jointCount: 4,
+      },
+      telemetry: {
+        position: [98.2, 76.1, 12.5],
+        velocity: [0, 0, 0],
+        headingDeg: 110,
+        batteryPercent: 63,
+        powerW: 38,
+        signalStrength: 88,
+        temperatureC: 32,
+        speedMps: 0,
+        jointAnglesDeg: [0, 0, 0, 0],
+        jointQuaternion: [0, 0, 0, 1],
+        lastSeenAt: timestamp,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    {
+      id: 'default-unitree-go2',
+      kind: 'unitree_robot',
+      name: 'Unitree Go2',
+      status: 'working',
+      capabilityTags: ['ground_move', 'inspect', 'rough_terrain'],
+      physicalProfile: {
+        minWorkAltitudeM: 0,
+        maxWorkAltitudeM: 1.4,
+        maxSlopeDeg: 28,
+        supportedMaterials: sharedPhysicalMaterials,
+        nominalPowerW: 30,
+        workingPowerW: 180,
+        maxSpeedMps: 2.2,
+        jointCount: 12,
+      },
+      currentTaskId: 'default-task-ground-scan',
+      telemetry: {
+        position: [45.3, 22.8, 0.3],
+        velocity: [1.1, 0, 0.4],
+        headingDeg: 265,
+        batteryPercent: 52,
+        powerW: 154,
+        signalStrength: 91,
+        temperatureC: 34,
+        speedMps: 1.6,
+        jointAnglesDeg: [4, -8, 9, -7, 3, -6, 8, -5],
+        jointQuaternion: [0, 0, 0, 1],
+        lastSeenAt: timestamp,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    {
+      id: 'default-unitree-b2',
+      kind: 'unitree_robot',
+      name: 'Unitree B2',
+      status: 'idle',
+      capabilityTags: ['ground_move', 'payload', 'rough_terrain'],
+      physicalProfile: {
+        minWorkAltitudeM: 0,
+        maxWorkAltitudeM: 1.4,
+        maxSlopeDeg: 28,
+        supportedMaterials: sharedPhysicalMaterials,
+        nominalPowerW: 34,
+        workingPowerW: 220,
+        maxSpeedMps: 2.6,
+        jointCount: 12,
+      },
+      telemetry: {
+        position: [15.6, 35.2, 0.3],
+        velocity: [0, 0, 0],
+        headingDeg: 188,
+        batteryPercent: 91,
+        powerW: 34,
+        signalStrength: 90,
+        temperatureC: 30,
+        speedMps: 0,
+        jointAnglesDeg: [0, 0, 0, 0, 0, 0, 0, 0],
+        jointQuaternion: [0, 0, 0, 1],
+        lastSeenAt: timestamp,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    {
+      id: 'default-walker-x',
+      kind: 'humanoid',
+      name: 'Walker X',
+      status: 'working',
+      capabilityTags: ['ground_move', 'inspect', 'delivery'],
+      physicalProfile: {
+        minWorkAltitudeM: 0,
+        maxWorkAltitudeM: 2.4,
+        maxSlopeDeg: 18,
+        supportedMaterials: sharedPhysicalMaterials,
+        nominalPowerW: 42,
+        workingPowerW: 260,
+        maxSpeedMps: 1.4,
+        jointCount: 24,
+      },
+      currentTaskId: 'default-task-verify',
+      telemetry: {
+        position: [32.1, 18.7, 0],
+        velocity: [0.6, 0, 0.2],
+        headingDeg: 28,
+        batteryPercent: 68,
+        powerW: 232,
+        signalStrength: 87,
+        temperatureC: 35,
+        speedMps: 0.9,
+        jointAnglesDeg: [3, -4, 6, -8, 5, -3, 4, -2],
+        jointQuaternion: [0, 0, 0, 1],
+        lastSeenAt: timestamp,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    {
+      id: 'default-wheeled-w3',
+      kind: 'wheeled_robot',
+      name: 'Wheeled Robot W3',
+      status: 'idle',
+      capabilityTags: ['ground_move', 'inspect', 'transport'],
+      physicalProfile: {
+        minWorkAltitudeM: 0,
+        maxWorkAltitudeM: 1.2,
+        maxSlopeDeg: 12,
+        supportedMaterials: ['asphalt', 'concrete', 'packed_soil'],
+        nominalPowerW: 18,
+        workingPowerW: 90,
+        maxSpeedMps: 2,
+        jointCount: 4,
+      },
+      telemetry: {
+        position: [12.8, 44.3, 0],
+        velocity: [0, 0, 0],
+        headingDeg: 340,
+        batteryPercent: 55,
+        powerW: 18,
+        signalStrength: 84,
+        temperatureC: 29,
+        speedMps: 0,
+        jointAnglesDeg: [0, 0, 0, 0],
+        jointQuaternion: [0, 0, 0, 1],
+        lastSeenAt: timestamp,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    {
+      id: 'default-matrice-30t',
+      kind: 'drone',
+      name: 'DJI Matrice 30T',
+      status: 'idle',
+      capabilityTags: ['aerial_move', 'thermal', 'zoom', 'mapping'],
+      physicalProfile: {
+        minWorkAltitudeM: 3,
+        maxWorkAltitudeM: 60,
+        maxSlopeDeg: 90,
+        supportedMaterials: ['air'],
+        nominalPowerW: 44,
+        workingPowerW: 220,
+        maxSpeedMps: 12,
+        jointCount: 4,
+      },
+      telemetry: {
+        position: [86.4, 58.0, 46.2],
+        velocity: [0, 0, 0],
+        headingDeg: 76,
+        batteryPercent: 84,
+        powerW: 44,
+        signalStrength: 93,
+        temperatureC: 31,
+        speedMps: 0,
+        jointAnglesDeg: [0, 0, 0, 0],
+        jointQuaternion: [0, 0, 0, 1],
+        lastSeenAt: timestamp,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    {
+      id: 'default-sensor-hub-a1',
+      kind: 'sensor_node',
+      name: 'Sensor Hub A1',
+      status: 'idle',
+      capabilityTags: ['sense', 'thermal', 'report'],
+      physicalProfile: {
+        minWorkAltitudeM: 0,
+        maxWorkAltitudeM: 4,
+        maxSlopeDeg: 8,
+        supportedMaterials: sharedPhysicalMaterials,
+        nominalPowerW: 6,
+        workingPowerW: 14,
+        maxSpeedMps: 0,
+        jointCount: 0,
+      },
+      telemetry: {
+        position: [62.5, 28.5, 0.2],
+        velocity: [0, 0, 0],
+        headingDeg: 0,
+        batteryPercent: 100,
+        powerW: 6,
+        signalStrength: 97,
+        temperatureC: 27,
+        speedMps: 0,
+        jointAnglesDeg: [],
+        jointQuaternion: [0, 0, 0, 1],
+        lastSeenAt: timestamp,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+  ];
+}
+
+function createDefaultGoalsAndTasks(timestamp: string): Pick<SimulationState, 'goals' | 'tasks'> {
+  const goalId = 'default-goal-patrol';
+  const tasks = [
+    {
+      id: 'default-task-uav-scan',
+      goalId,
+      kind: 'inspect',
+      title: 'UAV 高空扫描',
+      description: 'DJI Mavic 3E 对目标区域执行航测扫描。',
+      status: 'active',
+      assigneeDeviceId: 'default-dji-mavic-3e',
+      progress: 0.75,
+      notes: 'route_segment=aerial',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    {
+      id: 'default-task-ground-scan',
+      goalId,
+      kind: 'inspect',
+      title: '地面近距热测',
+      description: 'Unitree Go2 对低矮遮挡区执行近距巡检。',
+      status: 'active',
+      assigneeDeviceId: 'default-unitree-go2',
+      progress: 0.48,
+      notes: 'route_segment=ground',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    {
+      id: 'default-task-verify',
+      goalId,
+      kind: 'observe',
+      title: '复杂动作验证',
+      description: 'Walker X 进入人类可达区域做交互验证。',
+      status: 'queued',
+      assigneeDeviceId: 'default-walker-x',
+      progress: 0,
+      notes: 'human_accessible=true',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+  ] satisfies SimulationState['tasks'];
+
+  return {
+    goals: [
+      {
+        id: goalId,
+        title: '巡检解放路沿线建筑',
+        description: '对连续城市街区进行多设备协同巡检。',
+        sourceText: '巡检解放路沿线建筑，优先发现遮挡区和异常热源。',
+        priority: 'high',
+        status: 'active',
+        childTaskIds: tasks.map((task) => task.id),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    ],
+    tasks,
+  };
+}
+
 export function createDefaultSimulationState(): SimulationState {
   const timestamp = nowIso();
+  const defaultWork = createDefaultGoalsAndTasks(timestamp);
 
   return {
     version: 1,
-    phase: 'booting',
+    phase: 'running',
     clock: {
       step: 0,
       simulationTimeMs: 0,
@@ -307,6 +669,14 @@ export function createDefaultSimulationState(): SimulationState {
       autosaveEnabled: true,
       tickIntervalMs: 1000,
       terminalLogDensity: 'normal',
+      maps: {
+        googleMaps: {
+          apiKeyEnv: 'PUBLIC_GOOGLE_MAPS_API_KEY',
+        },
+        cesiumIon: {
+          tokenEnv: 'PUBLIC_CESIUM_ION_TOKEN',
+        },
+      },
     },
     world: createDefaultWorldSnapshot(),
     physicalRules: {
@@ -317,15 +687,38 @@ export function createDefaultSimulationState(): SimulationState {
       quadrupedMaxSlopeDeg: 28,
       groundAllowedMaterials: ['asphalt', 'concrete', 'grass', 'packed_soil'],
     },
-    devices: [],
-    goals: [],
-    tasks: [],
+    devices: createDefaultDevices(timestamp),
+    goals: defaultWork.goals,
+    tasks: defaultWork.tasks,
     logs: [
       {
         id: 'log-bootstrap',
         level: 'info',
         scope: 'bootstrap',
-        message: 'Simulation state 初始化完成。',
+        message: 'TerminalLink 单仪表盘初始化完成。',
+        timestamp,
+      },
+      {
+        id: 'log-default-gateway',
+        level: 'info',
+        scope: 'gateway',
+        message: '群体智能网关已载入默认巡检目标。',
+        timestamp,
+      },
+      {
+        id: 'log-default-dji',
+        level: 'info',
+        scope: 'device',
+        message: 'DJI Mavic 3E 已到达扫描区域上空。',
+        details: 'default-dji-mavic-3e',
+        timestamp,
+      },
+      {
+        id: 'log-default-go2',
+        level: 'warn',
+        scope: 'device',
+        message: 'Unitree Go2 电量 52%，继续执行近距巡检。',
+        details: 'default-unitree-go2',
         timestamp,
       },
     ],

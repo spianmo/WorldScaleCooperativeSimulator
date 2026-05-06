@@ -44,7 +44,24 @@ function buildMessage(state: SimulationState): StateSyncMessage {
     sourceId: instanceId,
     revision: localRevision,
     createdAt: new Date().toISOString(),
-    state,
+    state: redactStateCredentials(state),
+  };
+}
+
+function redactStateCredentials(state: SimulationState): SimulationState {
+  return {
+    ...state,
+    settings: {
+      ...state.settings,
+      maps: {
+        googleMaps: {
+          apiKeyEnv: state.settings.maps.googleMaps.apiKeyEnv,
+        },
+        cesiumIon: {
+          tokenEnv: state.settings.maps.cesiumIon.tokenEnv,
+        },
+      },
+    },
   };
 }
 

@@ -36,14 +36,6 @@ function RoutedWindow() {
     return () => window.removeEventListener('hashchange', updateRoute);
   }, []);
 
-  if (route.name === 'control') {
-    return <ControlWindow />;
-  }
-
-  if (route.name === 'glasses') {
-    return <GlassesWindow />;
-  }
-
   if (route.name === 'settings') {
     return <SettingsWindow />;
   }
@@ -54,6 +46,14 @@ function RoutedWindow() {
 
   if (route.name === 'create-device') {
     return <CreateDeviceWindow />;
+  }
+
+  if (route.name === 'control') {
+    return <ControlWindow />;
+  }
+
+  if (route.name === 'glasses') {
+    return <GlassesWindow />;
   }
 
   if (route.name === 'device') {

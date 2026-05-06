@@ -48,6 +48,7 @@ export interface SimulationProviderValue {
   error: string | null;
   reloadState: () => Promise<void>;
   resetState: () => void;
+  setPhase: (phase: SimulationState['phase']) => void;
   setThemeMode: (mode: ThemeMode) => void;
   setLocale: (locale: LocaleCode) => void;
   setSettings: (patch: Partial<SimulationSettings>) => void;
@@ -88,6 +89,16 @@ function withResolvedTheme(nextState: SimulationState): SimulationState {
         ...nextState.settings.theme,
         resolvedMode: resolveThemeMode(nextState.settings.theme.mode),
       },
+    },
+  };
+}
+
+function mergeCredentialSettings(nextState: SimulationState, credentialSource: SimulationState): SimulationState {
+  return {
+    ...nextState,
+    settings: {
+      ...nextState.settings,
+      maps: credentialSource.settings.maps,
     },
   };
 }
@@ -206,7 +217,7 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
         const latestSyncedState = readLatestStateSync();
         const resolvedLoadedState = withResolvedTheme(loadedState);
         const nextState = latestSyncedState && compareSimulationStates(latestSyncedState.state, resolvedLoadedState) > 0
-          ? latestSyncedState.state
+          ? mergeCredentialSettings(latestSyncedState.state, resolvedLoadedState)
           : resolvedLoadedState;
 
         commitState(nextState, { persist: false, force: true });
@@ -249,7 +260,7 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
     };
 
     void subscribeStateSync((nextState) => {
-      commitState(nextState, { persist: false });
+      commitState(mergeCredentialSettings(nextState, stateRef.current), { persist: false });
       setError(null);
     }).then((cleanup) => {
       if (disposed) {
@@ -421,6 +432,24 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
     commitState(resetSimulationState(), { force: true });
   };
 
+  const setPhase = (phase: SimulationState['phase']) => {
+    commitState((currentState) => appendLogToState(
+      {
+        ...currentState,
+        phase,
+        clock: {
+          ...currentState.clock,
+          wallClockAt: new Date().toISOString(),
+        },
+      },
+      {
+        level: 'info',
+        scope: 'simulation',
+        message: phase === 'paused' ? '仿真已暂停。' : '仿真已开始。',
+      },
+    ), { force: true });
+  };
+
   const generateWorld = async (input?: GenerateWorldInput['input']) => {
     const generated = await invokeGenerateWorld(input ?? {
       name: `协同世界-${Date.now().toString().slice(-4)}`,
@@ -461,6 +490,7 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
     error,
     reloadState,
     resetState,
+    setPhase,
     setThemeMode,
     setLocale,
     setSettings,
@@ -499,6 +529,7 @@ export function useSimulationActions() {
   const {
     reloadState,
     resetState,
+    setPhase,
     setThemeMode,
     setLocale,
     setSettings,
@@ -520,6 +551,7 @@ export function useSimulationActions() {
   return {
     reloadState,
     resetState,
+    setPhase,
     setThemeMode,
     setLocale,
     setSettings,

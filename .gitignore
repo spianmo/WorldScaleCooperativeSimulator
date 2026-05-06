@@ -2,6 +2,7 @@ node_modules/
 dist/
 src-tauri/target/
 config/llm.toml
+config/maps.toml
 
 .DS_Store
 *.log

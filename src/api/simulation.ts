@@ -37,6 +37,13 @@ export interface GenerateWorldInput {
     seed?: number;
     size?: RustVector3;
     object_density?: number;
+    street_address?: string;
+    district?: string;
+    center_lat?: number;
+    center_lon?: number;
+    radius_m?: number;
+    data_source?: string;
+    preview_quality?: 'low' | 'medium' | 'high';
   };
 }
 
@@ -79,7 +86,7 @@ interface RustVector3 {
 }
 
 type RustDeviceKind = 'rover' | 'drone' | 'humanoid' | 'sensor_hub' | 'charging_base';
-type ExtendedRustDeviceKind = RustDeviceKind | 'quadruped';
+type ExtendedRustDeviceKind = RustDeviceKind | 'quadruped' | 'unitree_robot';
 type RustDeviceStatus = 'idle' | 'moving' | 'working' | 'charging' | 'offline';
 type RustTaskStatus = 'pending' | 'assigned' | 'in_progress' | 'blocked' | 'done' | 'cancelled';
 
@@ -184,6 +191,16 @@ interface RustSimulationState {
     default_tick_seconds: number;
     log_level: LogLevel;
     terminal_log_density?: SimulationSettings['terminalLogDensity'];
+    maps?: {
+      google_maps?: {
+        api_key?: string | null;
+        api_key_env?: string;
+      };
+      cesium_ion?: {
+        token?: string | null;
+        token_env?: string;
+      };
+    };
   };
   world: {
     id: string;
@@ -224,6 +241,7 @@ const rustToDeviceKind: Record<ExtendedRustDeviceKind, DeviceKind> = {
   drone: 'drone',
   humanoid: 'humanoid',
   quadruped: 'quadruped',
+  unitree_robot: 'unitree_robot',
   sensor_hub: 'sensor_node',
   charging_base: 'sensor_node',
 };
@@ -233,6 +251,7 @@ const deviceKindToRust: Record<DeviceKind, ExtendedRustDeviceKind> = {
   drone: 'drone',
   humanoid: 'humanoid',
   quadruped: 'quadruped',
+  unitree_robot: 'unitree_robot',
   sensor_node: 'sensor_hub',
 };
 
@@ -294,7 +313,13 @@ function mapWorldObject(object: RustWorldObject): WorldObject {
     name: object.name,
     description: object.properties.description ?? object.tags.join(', '),
     position: vectorToTuple(object.position),
-    rotation: object.properties.orientation === 'north_south' ? [0, Math.PI / 2, 0] : [0, 0, 0],
+    rotation: [
+      0,
+      object.properties.orientation_rad !== undefined
+        ? Number(object.properties.orientation_rad)
+        : object.properties.orientation === 'north_south' ? Math.PI / 2 : 0,
+      0,
+    ],
     scale: vectorToTuple(object.size),
     materialId: object.properties.material === 'asphalt' || object.kind.includes('road')
       ? 'mat-asphalt'
@@ -302,6 +327,7 @@ function mapWorldObject(object: RustWorldObject): WorldObject {
         ? 'mat-grass'
         : 'mat-concrete',
     tags: object.tags,
+    properties: object.properties,
   };
 }
 
@@ -461,8 +487,11 @@ export function fromRustSimulationState(rustState: RustSimulationState): Simulat
   const world: WorldSnapshot = {
     id: rustState.world.id,
     name: rustState.world.name,
-    description: `${rustState.world.terrain} / ${rustState.world.climate}`,
+    description: rustState.world.objects
+      .find((object) => object.properties.description)
+      ?.properties.description ?? `${rustState.world.terrain} / ${rustState.world.climate}`,
     seed: String(rustState.world.seed),
+    metadata: collectWorldMetadata(rustState.world.objects),
     coordinateSystemVisible: true,
     terrain: {
       slopeDeg: rustState.world.terrain === 'mountain' ? 28 : rustState.world.terrain === 'mixed' ? 12 : 4,
@@ -564,6 +593,16 @@ export function fromRustSimulationState(rustState: RustSimulationState): Simulat
       autosaveEnabled: rustState.settings.auto_save,
       tickIntervalMs: rustState.settings.default_tick_seconds * 1000,
       terminalLogDensity: rustState.settings.terminal_log_density ?? 'normal',
+      maps: {
+        googleMaps: {
+          apiKey: rustState.settings.maps?.google_maps?.api_key ?? undefined,
+          apiKeyEnv: rustState.settings.maps?.google_maps?.api_key_env ?? 'PUBLIC_GOOGLE_MAPS_API_KEY',
+        },
+        cesiumIon: {
+          token: rustState.settings.maps?.cesium_ion?.token ?? undefined,
+          tokenEnv: rustState.settings.maps?.cesium_ion?.token_env ?? 'PUBLIC_CESIUM_ION_TOKEN',
+        },
+      },
     },
     world,
     physicalRules: {
@@ -579,6 +618,18 @@ export function fromRustSimulationState(rustState: RustSimulationState): Simulat
     tasks,
     logs,
     windows: [],
+  };
+}
+
+function collectWorldMetadata(objects: RustWorldObject[]): Record<string, string> {
+  const metadata = objects.find((object) => object.properties.world_metadata === 'true')?.properties ?? {};
+  const osmBuildings = objects.filter((object) => object.properties.source === 'openstreetmap' && object.kind.includes('building')).length;
+  const osmRoads = objects.filter((object) => object.properties.source === 'openstreetmap' && object.kind.includes('road')).length;
+
+  return {
+    ...metadata,
+    building_count: metadata.building_count ?? String(osmBuildings),
+    road_count: metadata.road_count ?? String(osmRoads),
   };
 }
 

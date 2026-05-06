@@ -15,12 +15,12 @@
         "label": "world-simulator",
         "title": "物理世界仿真场景",
         "url": "index.html#/world",
-        "width": 1440,
-        "height": 900,
-        "x": 40,
-        "y": 40,
+        "width": 1920,
+        "height": 1080,
+        "minWidth": 1440,
+        "minHeight": 900,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": true
       }
     ],
     "security": {
@@ -33,4 +33,3 @@
     "icon": []
   }
 }
-

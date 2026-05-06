@@ -126,6 +126,8 @@ export function GlassesWindow({ transcript = defaultTranscript, logs = defaultLo
             showAxes={state.world.coordinateSystemVisible}
             hidePrimaryDevice
             tickIntervalMs={state.settings.tickIntervalMs}
+            googleMapsApiKey={state.settings.maps.googleMaps.apiKey}
+            cesiumIonToken={state.settings.maps.cesiumIon.token}
           />
           <TerminalLog
             title={t('glassesWindow.logTitle')}

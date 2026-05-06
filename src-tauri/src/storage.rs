@@ -1,4 +1,4 @@
-use crate::models::{LlmSettings, SimulationState, World, WorldSnapshotRecord};
+use crate::models::{LlmSettings, MapProviderSettings, SimulationState, World, WorldSnapshotRecord};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -51,9 +51,94 @@ pub fn load_llm_settings_from_project_config(data_dir: &Path) -> Result<Option<L
     Ok(None)
 }
 
+pub fn load_map_settings_from_project_config(data_dir: &Path) -> Result<Option<MapProviderSettings>> {
+    let settings = load_map_settings_from_candidates(map_settings_candidates(data_dir))?;
+    if settings.is_some() {
+        return Ok(settings);
+    }
+
+    let mut settings = MapProviderSettings::default();
+    settings.google_maps.api_key = resolve_optional_secret(
+        settings.google_maps.api_key,
+        &settings.google_maps.api_key_env,
+    );
+    settings.cesium_ion.token = resolve_optional_secret(
+        settings.cesium_ion.token,
+        &settings.cesium_ion.token_env,
+    );
+
+    if settings.google_maps.api_key.is_some() || settings.cesium_ion.token.is_some() {
+        return Ok(Some(settings));
+    }
+
+    Ok(None)
+}
+
+fn map_settings_candidates(data_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
+        if let Some(project_dir) = Path::new(manifest_dir).parent() {
+            candidates.push(project_dir.join("config").join("maps.toml"));
+        }
+    }
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.push(current_dir.join("config").join("maps.toml"));
+    }
+    candidates.push(data_dir.join("config").join("maps.toml"));
+    candidates.push(data_dir.join("maps.toml"));
+    candidates
+}
+
+fn load_map_settings_from_candidates(candidates: Vec<PathBuf>) -> Result<Option<MapProviderSettings>> {
+    for path in candidates {
+        if !path.exists() {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("读取地图配置失败: {}", path.display()))?;
+        let mut settings = toml::from_str::<MapProviderSettings>(&content)
+            .with_context(|| format!("解析地图配置失败: {}", path.display()))?;
+
+        // TOML 明文配置优先；为空时允许从环境变量兜底，便于 preview/CI smoke 使用。
+        settings.google_maps.api_key = resolve_optional_secret(
+            settings.google_maps.api_key,
+            &settings.google_maps.api_key_env,
+        );
+        settings.cesium_ion.token = resolve_optional_secret(
+            settings.cesium_ion.token,
+            &settings.cesium_ion.token_env,
+        );
+
+        return Ok(Some(settings));
+    }
+
+    Ok(None)
+}
+
+fn resolve_optional_secret(value: Option<String>, env_name: &str) -> Option<String> {
+    value
+        .and_then(trim_optional_secret)
+        .or_else(|| std::env::var(env_name).ok().and_then(trim_optional_secret))
+}
+
+fn trim_optional_secret(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 pub fn save_state_to_path(path: &Path, state: &SimulationState) -> Result<()> {
     ensure_parent_dir(path)?;
-    let content = toml::to_string_pretty(state).context("序列化状态为 TOML 失败")?;
+    let mut persisted_state = state.clone();
+    persisted_state.settings.llm.api_key = None;
+    persisted_state.settings.maps.google_maps.api_key = None;
+    persisted_state.settings.maps.cesium_ion.token = None;
+
+    let content = toml::to_string_pretty(&persisted_state).context("序列化状态为 TOML 失败")?;
     fs::write(path, content).with_context(|| format!("写入状态文件失败: {}", path.display()))?;
     Ok(())
 }
@@ -117,4 +202,57 @@ pub fn load_world_snapshot_from_path(path: &Path) -> Result<World> {
     let world = toml::from_str(&content)
         .with_context(|| format!("解析世界快照 TOML 失败: {}", path.display()))?;
     Ok(world)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("worldsim-{name}-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn load_map_settings_reads_maps_toml_from_config_dir() {
+        let data_dir = temp_path("maps-config");
+        let config_dir = data_dir.join("config");
+        fs::create_dir_all(&config_dir).expect("创建临时 config 目录");
+        fs::write(
+            config_dir.join("maps.toml"),
+            r#"
+[google_maps]
+api_key = " google-key-from-toml "
+api_key_env = "PUBLIC_GOOGLE_MAPS_API_KEY"
+
+[cesium_ion]
+token = " cesium-token-from-toml "
+token_env = "PUBLIC_CESIUM_ION_TOKEN"
+"#,
+        )
+        .expect("写入临时 maps.toml");
+
+        let settings = load_map_settings_from_candidates(vec![config_dir.join("maps.toml")])
+            .expect("读取地图配置")
+            .expect("地图配置存在");
+
+        assert_eq!(settings.google_maps.api_key.as_deref(), Some("google-key-from-toml"));
+        assert_eq!(settings.cesium_ion.token.as_deref(), Some("cesium-token-from-toml"));
+    }
+
+    #[test]
+    fn save_state_to_path_redacts_runtime_credentials() {
+        let path = temp_path("state-redaction").join("app_state.toml");
+        let mut state = SimulationState::default();
+        state.settings.llm.api_key = Some("llm-secret".to_string());
+        state.settings.maps.google_maps.api_key = Some("google-secret".to_string());
+        state.settings.maps.cesium_ion.token = Some("cesium-secret".to_string());
+
+        save_state_to_path(&path, &state).expect("写入状态");
+        let content = fs::read_to_string(&path).expect("读取状态");
+
+        assert!(!content.contains("llm-secret"));
+        assert!(!content.contains("google-secret"));
+        assert!(!content.contains("cesium-secret"));
+    }
 }

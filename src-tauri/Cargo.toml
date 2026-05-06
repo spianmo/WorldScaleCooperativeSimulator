@@ -15,7 +15,6 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
-rand = "0.8"
 futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
