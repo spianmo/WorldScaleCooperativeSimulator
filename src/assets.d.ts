@@ -75,6 +75,18 @@ declare module '@cesium/engine/Source/Core/Cartesian3.js' {
   export { Cartesian3 as default } from '@cesium/engine';
 }
 
+declare module '@cesium/engine/Source/Core/Cartographic.js' {
+  export { Cartographic as default } from '@cesium/engine';
+}
+
+declare module '@cesium/engine/Source/Core/PolygonHierarchy.js' {
+  export { PolygonHierarchy as default } from '@cesium/engine';
+}
+
+declare module '@cesium/engine/Source/Core/Resource.js' {
+  export { Resource as default } from '@cesium/engine';
+}
+
 declare module '@cesium/engine/Source/Core/Color.js' {
   export { Color as default } from '@cesium/engine';
 }
@@ -101,6 +113,10 @@ declare module '@cesium/engine/Source/Core/Ion.js' {
 
 declare module '@cesium/engine/Source/Core/Math.js' {
   export { Math as default } from '@cesium/engine';
+}
+
+declare module '@cesium/engine/Source/Core/Matrix4.js' {
+  export { Matrix4 as default } from '@cesium/engine';
 }
 
 declare module '@cesium/engine/Source/Core/NearFarScalar.js' {
@@ -151,4 +167,24 @@ declare module '@cesium/engine/Source/Scene/createGooglePhotorealistic3DTileset.
 
 declare module '@cesium/engine/Source/Widget/CesiumWidget.js' {
   export { CesiumWidget as default } from '@cesium/engine';
+}
+
+declare module '@cesium/engine/Source/DataSources/ConstantPositionProperty.js' {
+  export { ConstantPositionProperty as default } from '@cesium/engine';
+}
+
+declare module '@cesium/engine/Source/DataSources/ConstantProperty.js' {
+  export { ConstantProperty as default } from '@cesium/engine';
+}
+
+declare module '@cesium/engine/Source/DataSources/CallbackProperty.js' {
+  export { CallbackProperty as default } from '@cesium/engine';
+}
+
+declare module '@cesium/engine/Source/DataSources/CallbackPositionProperty.js' {
+  export { CallbackPositionProperty as default } from '@cesium/engine';
+}
+
+declare module '@cesium/engine/Source/Core/Quaternion.js' {
+  export { Quaternion as default } from '@cesium/engine';
 }

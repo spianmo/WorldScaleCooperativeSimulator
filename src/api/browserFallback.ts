@@ -11,6 +11,7 @@ import {
   type WorldSnapshotRecord,
 } from '../types';
 import { appendDeviceToState, appendGoalToState, replaceWorldInState, touchStateClock } from '../state/simulationStore';
+import { tx } from '../i18n';
 
 type BrowserInvokeArgs = Record<string, unknown> | undefined;
 type BrowserInvokeHandler = (args: BrowserInvokeArgs) => unknown | Promise<unknown>;
@@ -110,7 +111,7 @@ function extractSimulationState(args: BrowserInvokeArgs): SimulationState {
 
 function extractDeviceId(args: BrowserInvokeArgs): string {
   if (!args || typeof args !== 'object' || typeof args.deviceId !== 'string') {
-    throw new Error('browser fallback 需要 deviceId 参数');
+    throw new Error(tx('browserFallback.error.missingDeviceId'));
   }
 
   return args.deviceId;
@@ -275,12 +276,12 @@ function overpassElementToWorldObject(element: BrowserOverpassElement, centerLat
   const width = Math.max(2.2, Math.abs(maxX - minX));
   const depth = Math.max(2.2, Math.abs(maxZ - minZ));
   const fallbackName = hasHighway
-    ? 'OpenStreetMap 道路'
+    ? tx('browserFallback.roadsName')
     : hasBuilding
-      ? 'OpenStreetMap 建筑'
+      ? tx('browserFallback.buildingsName')
       : hasPoi
-        ? 'OpenStreetMap 兴趣点'
-        : 'OpenStreetMap 图层';
+        ? tx('browserFallback.poiName')
+        : tx('browserFallback.layerName');
   const name = tags.name ?? `${fallbackName} ${element.id}`;
   const properties: Record<string, string> = {
     source: 'openstreetmap',
@@ -313,7 +314,7 @@ function overpassElementToWorldObject(element: BrowserOverpassElement, centerLat
       id: randomId('osm-road'),
       kind: 'road_segment',
       name,
-      description: 'OpenStreetMap 在线道路数据，作为真实街区可通行路径。',
+      description: tx('browserFallback.roadsDescription'),
       position: [centerX, 0, centerZ],
       rotation: [0, orientationRad, 0],
       scale: [length, 0.2, 3.2],
@@ -331,7 +332,7 @@ function overpassElementToWorldObject(element: BrowserOverpassElement, centerLat
       id: randomId('osm-building'),
       kind: 'building',
       name,
-      description: 'OpenStreetMap 在线建筑轮廓拉伸形成的 3D 建筑体量。',
+      description: tx('browserFallback.buildingsDescription'),
       position: [centerX, 0, centerZ],
       rotation: [0, 0, 0],
       scale: [Math.max(3, width), height, Math.max(3, depth)],
@@ -346,7 +347,7 @@ function overpassElementToWorldObject(element: BrowserOverpassElement, centerLat
     id: randomId(hasPoi ? 'osm-poi' : 'osm-terrain'),
     kind: hasPoi ? 'landmark' : hasWater ? 'water' : 'terrain_patch',
     name,
-    description: hasPoi ? 'OpenStreetMap 在线兴趣点。' : 'OpenStreetMap 在线地表语义图层。',
+    description: hasPoi ? tx('browserFallback.poiDescription') : tx('browserFallback.layerDescription'),
     position: [centerX, 0, centerZ],
     rotation: [0, 0, 0],
     scale: [Math.max(2.4, width), hasPoi ? 8 : 0.2, Math.max(2.4, depth)],
@@ -373,7 +374,7 @@ async function fetchOsmWorldObjects(streetAddress: string, centerLatInput: numbe
     const places = await response.json() as BrowserNominatimPlace[];
     const place = places[0];
     if (!place) {
-      throw new Error(`Nominatim 未找到地点：${streetAddress}`);
+      throw new Error(tx('browserFallback.error.nominatimNotFound', { place: streetAddress }));
     }
     centerLat = Number.parseFloat(place.lat);
     centerLon = Number.parseFloat(place.lon);
@@ -381,7 +382,7 @@ async function fetchOsmWorldObjects(streetAddress: string, centerLatInput: numbe
   }
 
   if (!Number.isFinite(centerLat) || !Number.isFinite(centerLon)) {
-    throw new Error('街区中心经纬度无效');
+    throw new Error(tx('browserFallback.error.invalidCenter'));
   }
 
   const query = `
@@ -421,7 +422,7 @@ async function fetchOsmWorldObjects(streetAddress: string, centerLatInput: numbe
   const roadCount = objects.filter((object) => object.kind === 'road_segment').length;
   const buildingCount = objects.filter((object) => object.kind === 'building' || object.kind === 'landmark').length;
   if (roadCount < 2 || buildingCount < 2) {
-    throw new Error('Overpass 返回的道路或建筑数量不足');
+    throw new Error(tx('browserFallback.error.overpassEmpty'));
   }
 
   return {
@@ -451,22 +452,29 @@ async function createGeneratedWorld(args: BrowserInvokeArgs): Promise<WorldSnaps
       })
     : {};
   const timestamp = nowIso();
-  const streetAddress = input.street_address?.trim() || '解放路城市演示街区';
-  const district = input.district?.trim() || '示范行政区';
+  const streetAddress = input.street_address?.trim() || tx('browserFallback.defaultStreetAddress');
+  const district = input.district?.trim() || tx('browserFallback.defaultDistrict');
   const radiusM = Math.max(120, Math.min(3000, input.radius_m ?? 500));
   const dataSource = input.data_source?.trim() || 'OpenStreetMap';
   if (!/^openstreetmap$/i.test(dataSource)) {
-    throw new Error(`只支持在线 OpenStreetMap 3D 地图渠道，当前数据源不受支持：${dataSource}`);
+    throw new Error(tx('browserFallback.error.unsupportedDataSource', { source: dataSource }));
   }
   const weather = 'sunny' as WorldSnapshot['terrain']['weather'];
   const dataset = await fetchOsmWorldObjects(streetAddress, input.center_lat, input.center_lon, radiusM);
   const objects = [...dataset.objects];
 
+  const metadataDescription = tx('browserFallback.worldDescription', {
+    place: streetAddress,
+    lat: dataset.centerLat.toFixed(6),
+    lon: dataset.centerLon.toFixed(6),
+    radius: radiusM,
+    source: dataSource,
+  });
   objects.unshift({
     id: randomId('metadata'),
     kind: 'boundary',
-    name: `${streetAddress} 元数据`,
-    description: `指定街道 3D 建筑街景：${streetAddress}，中心 ${dataset.centerLat.toFixed(6)},${dataset.centerLon.toFixed(6)}，半径 ${radiusM}m，来源 ${dataSource}。`,
+    name: tx('browserFallback.worldMetadataName', { place: streetAddress }),
+    description: metadataDescription,
     position: [50, 0, 50],
     rotation: [0, 0, 0],
     scale: [100, 0.05, 100],
@@ -474,7 +482,7 @@ async function createGeneratedWorld(args: BrowserInvokeArgs): Promise<WorldSnaps
     tags: ['world_metadata', 'real_street', 'osm'],
     properties: {
       world_metadata: 'true',
-      description: `指定街道 3D 建筑街景：${streetAddress}，中心 ${dataset.centerLat.toFixed(6)},${dataset.centerLon.toFixed(6)}，半径 ${radiusM}m，来源 ${dataSource}。`,
+      description: metadataDescription,
       street_address: streetAddress,
       district,
       center_lat: dataset.centerLat.toFixed(6),
@@ -496,8 +504,13 @@ async function createGeneratedWorld(args: BrowserInvokeArgs): Promise<WorldSnaps
   return {
     ...current.world,
     id: randomId('world'),
-    name: input.name ?? `${streetAddress} 实景世界`,
-    description: `指定街道 3D 建筑街景：${streetAddress}，中心 ${dataset.centerLat.toFixed(6)},${dataset.centerLon.toFixed(6)}，半径 ${radiusM}m。`,
+    name: input.name ?? tx('browserFallback.worldName', { place: streetAddress }),
+    description: tx('browserFallback.worldDescriptionSimple', {
+      place: streetAddress,
+      lat: dataset.centerLat.toFixed(6),
+      lon: dataset.centerLon.toFixed(6),
+      radius: radiusM,
+    }),
     seed: String(input.seed ?? Date.now()),
     metadata: {
       street_address: streetAddress,
@@ -599,7 +612,7 @@ function createDeviceFromArgs(args: BrowserInvokeArgs): SimulationDevice {
     return args.device as SimulationDevice;
   }
   if (!args || typeof args !== 'object' || !args.input || typeof args.input !== 'object') {
-    throw new Error('browser fallback 需要 input 或 device 参数');
+    throw new Error(tx('browserFallback.error.missingInputDevice'));
   }
 
   const input = args.input as {
@@ -636,7 +649,7 @@ function createDeviceFromArgs(args: BrowserInvokeArgs): SimulationDevice {
   return {
     id: randomId('device'),
     kind,
-    name: input.name ?? '模拟设备',
+    name: input.name ?? tx('browserFallback.deviceFallbackName'),
     status: 'idle',
     capabilityTags: input.capabilities ?? (kind === 'drone' ? ['aerial_move', 'photo'] : ['ground_move', 'inspect']),
     physicalProfile: profile,
@@ -666,18 +679,18 @@ function createGatewayGoalAndTasksFromArgs(args: BrowserInvokeArgs): { goal: Sim
     };
   }
   if (!args || typeof args !== 'object' || !args.input || typeof args.input !== 'object') {
-    throw new Error('browser fallback 需要 input 或 goal 参数');
+    throw new Error(tx('browserFallback.error.missingInputGoal'));
   }
 
   const input = args.input as { title?: string; description?: string; priority?: number };
   const now = nowIso();
   const goalId = randomId('goal');
-  const title = input.title ?? '协同目标';
+  const title = input.title ?? tx('browserFallback.defaultGoalTitle');
   const devices = readStoredState().devices;
   const taskTitles = [
-    'intent_agent 解析 AR 眼镜目标',
-    'dispatch_agent 选择可用异构终端',
-    'safety_agent 校验执行边界并下发',
+    tx('browserFallback.agentSteps.intent'),
+    tx('browserFallback.agentSteps.dispatch'),
+    tx('browserFallback.agentSteps.safety'),
   ];
   const tasks: SimulationTask[] = taskTitles.map((taskTitle, index) => ({
     id: randomId('task'),
@@ -711,37 +724,37 @@ function createGatewayGoalAndTasksFromArgs(args: BrowserInvokeArgs): { goal: Sim
 function createBrowserLlmSseLogs(goal: SimulationGoal, tasks: SimulationTask[]) {
   const taskSummary = tasks.length
     ? tasks.map((task, index) => `${index + 1}. ${task.title}`).join('；')
-    : '无可执行任务';
+    : tx('browserFallback.noTask');
 
   return [
     createSimulationLogEntry({
       level: 'info',
       scope: 'llm_sse',
-      message: '浏览器 fallback: LLM SSE 请求开始，使用模拟 agents 规划流。',
+      message: tx('browserFallback.log.sseStart'),
       details: goal.id,
     }),
     createSimulationLogEntry({
       level: 'debug',
       scope: 'llm_sse',
-      message: `浏览器 fallback: LLM SSE delta #1: intent_agent 已解析目标「${goal.title}」。`,
+      message: tx('browserFallback.log.sseDelta1', { title: goal.title }),
       details: goal.id,
     }),
     createSimulationLogEntry({
       level: 'debug',
       scope: 'llm_sse',
-      message: `浏览器 fallback: LLM SSE delta #2: dispatch_agent 生成任务：${taskSummary}`,
+      message: tx('browserFallback.log.sseDelta2', { summary: taskSummary }),
       details: goal.id,
     }),
     createSimulationLogEntry({
       level: 'debug',
       scope: 'llm_sse',
-      message: '浏览器 fallback: LLM SSE delta #3: safety_agent 已校验执行边界。',
+      message: tx('browserFallback.log.sseDelta3'),
       details: goal.id,
     }),
     createSimulationLogEntry({
       level: 'info',
       scope: 'llm_sse',
-      message: `浏览器 fallback: LLM SSE 结果解析完成，tasks=${tasks.length}。`,
+      message: tx('browserFallback.log.sseEnd', { count: tasks.length }),
       details: goal.id,
     }),
   ];
@@ -778,7 +791,10 @@ function registerDefaultHandlers() {
           createSimulationLogEntry({
             level: 'info',
             scope: 'world',
-            message: `浏览器 fallback 已创建在线实景世界：${nextWorld.name}，来源 ${nextWorld.metadata?.data_source ?? 'OpenStreetMap'}`,
+            message: tx('browserFallback.log.createdWorld', {
+              name: nextWorld.name,
+              source: nextWorld.metadata?.data_source ?? 'OpenStreetMap',
+            }),
           }),
         ),
       };
@@ -857,7 +873,7 @@ function registerDefaultHandlers() {
         createSimulationLogEntry({
           level: 'info',
           scope: 'rules',
-          message: '浏览器 fallback 已更新物理规则。',
+          message: tx('browserFallback.log.rulesUpdated'),
         }),
       ),
     };
@@ -886,7 +902,9 @@ function registerDefaultHandlers() {
         createSimulationLogEntry({
           level: 'info',
           scope: 'gateway',
-          message: `浏览器 fallback: AR 眼镜目标已进入中枢 agents 计划，并立即指派 ${tasks.filter((task) => task.assigneeDeviceId).length} 个任务。`,
+          message: tx('browserFallback.log.goalDispatched', {
+            count: tasks.filter((task) => task.assigneeDeviceId).length,
+          }),
           details: goal.id,
         }),
       ),
@@ -1006,10 +1024,91 @@ function registerDefaultHandlers() {
     const snapshotName = sanitizeSnapshotName(input.snapshot_name ?? '');
     const snapshot = readStoredSnapshots()[snapshotName];
     if (!snapshot) {
-      throw new Error(`浏览器 fallback 未找到世界快照: ${snapshotName}`);
+      throw new Error(tx('browserFallback.error.snapshotNotFound', { name: snapshotName }));
     }
     writeStoredState(snapshot);
     return cloneState(snapshot);
+  });
+
+  browserHandlers.set('resolve_native_location', async () => {
+    throw new Error(tx('browserFallback.error.coreLocationUnsupported'));
+  });
+
+  const browserCacheStats = () => ({
+    sizeBytes: 0,
+    fileCount: 0,
+    maxBytes: 5 * 1024 * 1024 * 1024,
+    ttlDays: 30,
+  });
+  browserHandlers.set('tile_cache_get_config', async () => ({
+    max_bytes: 5 * 1024 * 1024 * 1024,
+    ttl_days: 30,
+  }));
+  browserHandlers.set('tile_cache_set_config', async () => browserCacheStats());
+  browserHandlers.set('tile_cache_stats', async () => browserCacheStats());
+  browserHandlers.set('tile_cache_clear', async () => browserCacheStats());
+  browserHandlers.set('tile_cache_sweep', async () => ({ removedFiles: 0, removedBytes: 0 }));
+
+  browserHandlers.set('resolve_ip_location', async () => {
+    try {
+      const response = await fetch('https://ipapi.co/json/');
+      if (!response.ok) {
+        throw new Error(`ipapi.co HTTP ${response.status}`);
+      }
+      const data = await response.json() as {
+        latitude?: number;
+        longitude?: number;
+        city?: string;
+        region?: string;
+        country_name?: string;
+        error?: boolean;
+        reason?: string;
+      };
+      if (data.error) {
+        throw new Error(data.reason ?? 'ipapi.co error');
+      }
+      if (typeof data.latitude !== 'number' || typeof data.longitude !== 'number') {
+        throw new Error(tx('browserFallback.error.ipapiMissingCoords'));
+      }
+      return {
+        latitude: data.latitude,
+        longitude: data.longitude,
+        accuracy_m: null,
+        city: data.city ?? null,
+        region: data.region ?? null,
+        country: data.country_name ?? null,
+        source: 'ipapi.co',
+      };
+    } catch (primary) {
+      const response = await fetch('https://ipwho.is/');
+      if (!response.ok) {
+        throw new Error(`ipwho.is HTTP ${response.status}; primary error: ${primary instanceof Error ? primary.message : String(primary)}`);
+      }
+      const data = await response.json() as {
+        success?: boolean;
+        message?: string;
+        latitude?: number;
+        longitude?: number;
+        city?: string;
+        region?: string;
+        country?: string;
+      };
+      if (data.success === false) {
+        throw new Error(data.message ?? 'ipwho.is error');
+      }
+      if (typeof data.latitude !== 'number' || typeof data.longitude !== 'number') {
+        throw new Error(tx('browserFallback.error.ipwhoMissingCoords'));
+      }
+      return {
+        latitude: data.latitude,
+        longitude: data.longitude,
+        accuracy_m: null,
+        city: data.city ?? null,
+        region: data.region ?? null,
+        country: data.country ?? null,
+        source: 'ipwho.is',
+      };
+    }
   });
 }
 
@@ -1034,7 +1133,7 @@ export function setBrowserSimulationState(state: SimulationState) {
 export async function invokeBrowserCommand<T>(command: string, args?: BrowserInvokeArgs): Promise<T> {
   const handler = browserHandlers.get(command);
   if (!handler) {
-    throw new Error(`浏览器 fallback 未注册命令: ${command}`);
+    throw new Error(tx('browserFallback.error.unknownCommand', { command }));
   }
 
   return handler(args) as Promise<T> | T;

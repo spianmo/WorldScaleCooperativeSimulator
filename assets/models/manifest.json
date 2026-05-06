@@ -53,8 +53,18 @@
       ],
       "license": "BSD-3-Clause",
       "license_file": "assets/models/UNITREE_MODEL_LICENSE.txt",
-      "usage": "Runtime quadruped body parts loaded by ColladaLoader in WorldScene",
-      "note": "Vendored runtime package size is about 25 MB. WorldScene composes base, hip, thigh, calf and foot DAE parts with light gait animation; this is mesh pose animation, not full joint dynamics or collision simulation."
+      "usage": "Runtime quadruped body parts loaded by URDFLoader (DeviceModelPreview) and baked into assets/models/baked/unitree_go2.glb (WorldScene Cesium Entity)",
+      "note": "Vendored runtime package size is about 25 MB. DeviceModelPreview composes the parts at runtime through urdf-loader following go2_description.urdf; WorldScene uses the offline-baked GLB (npm run bake:models) so Cesium can render the same geometry as a single Entity model."
+    },
+    {
+      "id": "unitree_go2_baked_glb",
+      "name": "Unitree Go2 baked GLB",
+      "path": "assets/models/baked/unitree_go2.glb",
+      "source": "Baked from unitree_go2_dae_runtime_parts via scripts/bake-urdf-to-glb.mjs",
+      "license": "BSD-3-Clause",
+      "license_file": "assets/models/UNITREE_MODEL_LICENSE.txt",
+      "conversion": "npm run bake:models (URDFLoader + GLTFExporter, three.js)",
+      "usage": "Cesium Entity model uri for quadruped/unitree_robot devices in WorldScene at near distances"
     },
     {
       "id": "unitree_g1_humanoid",
@@ -108,8 +118,18 @@
       ],
       "license": "BSD-3-Clause",
       "license_file": "assets/models/UNITREE_MODEL_LICENSE.txt",
-      "usage": "Runtime humanoid body parts loaded by STLLoader in WorldScene",
-      "note": "Runtime covers pelvis, waist, torso, head, logo, main leg joints and main arm joints. Fingers, palms and small sensor shells are intentionally not included yet to keep runtime bundle size controlled."
+      "usage": "Runtime humanoid body parts loaded by URDFLoader (DeviceModelPreview) and baked into assets/models/baked/unitree_g1.glb (WorldScene Cesium Entity)",
+      "note": "Runtime covers pelvis, waist, torso, head, logo, main leg joints and main arm joints. Fingers, palms and small sensor shells are intentionally not included; URDFLoader skips missing meshes via loadMeshCb to keep bundle size controlled."
+    },
+    {
+      "id": "unitree_g1_baked_glb",
+      "name": "Unitree G1 baked GLB",
+      "path": "assets/models/baked/unitree_g1.glb",
+      "source": "Baked from unitree_g1_stl_runtime_parts via scripts/bake-urdf-to-glb.mjs",
+      "license": "BSD-3-Clause",
+      "license_file": "assets/models/UNITREE_MODEL_LICENSE.txt",
+      "conversion": "npm run bake:models (URDFLoader + GLTFExporter, three.js)",
+      "usage": "Cesium Entity model uri for humanoid devices in WorldScene at near distances"
     },
     {
       "id": "parrot_bebop_reference",

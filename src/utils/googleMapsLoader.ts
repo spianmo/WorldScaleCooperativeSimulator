@@ -1,3 +1,5 @@
+import { tx } from '../i18n';
+
 const GOOGLE_MAPS_SCRIPT_ID = 'google-maps-create-world-api';
 
 function readImportMetaEnv(name: string): string | undefined {
@@ -17,11 +19,11 @@ export function getConfiguredGoogleMapsApiKey() {
 export async function loadGoogleMapsLibraries(libraryNames: string[]) {
   const apiKey = resolveGoogleMapsApiKey();
   if (!apiKey) {
-    throw new Error('缺少 Google Maps API key，请在 config/maps.toml 的 [google_maps].api_key 或 PUBLIC_GOOGLE_MAPS_API_KEY 中配置。');
+    throw new Error(tx('googleMapsLoader.missingKey'));
   }
 
   if (typeof window === 'undefined' || typeof document === 'undefined') {
-    throw new Error('Google Maps JavaScript API 只能在浏览器窗口中加载。');
+    throw new Error(tx('googleMapsLoader.browserOnly'));
   }
 
   if (!window.google?.maps?.importLibrary) {
@@ -30,7 +32,7 @@ export async function loadGoogleMapsLibraries(libraryNames: string[]) {
 
       const existingScript = document.getElementById(GOOGLE_MAPS_SCRIPT_ID) as HTMLScriptElement | null;
       if (existingScript) {
-        existingScript.addEventListener('error', () => reject(new Error('Google Maps JavaScript API 加载失败。')), { once: true });
+        existingScript.addEventListener('error', () => reject(new Error(tx('googleMapsLoader.loadFailed'))), { once: true });
         return;
       }
 
@@ -46,7 +48,7 @@ export async function loadGoogleMapsLibraries(libraryNames: string[]) {
       script.async = true;
       script.defer = true;
       script.src = `https://maps.googleapis.com/maps/api/js?${params.toString()}`;
-      script.onerror = () => reject(new Error('Google Maps JavaScript API 加载失败，请检查网络、API key 和 Maps JavaScript API 授权。'));
+      script.onerror = () => reject(new Error(tx('googleMapsLoader.loadFailedDetailed')));
       document.head.appendChild(script);
     });
 
@@ -56,7 +58,7 @@ export async function loadGoogleMapsLibraries(libraryNames: string[]) {
   await Promise.all(libraryNames.map((libraryName) => window.google?.maps.importLibrary(libraryName)));
 
   if (!window.google?.maps?.Map || !window.google.maps.Rectangle || !window.google.maps.Geocoder) {
-    throw new Error('Google Maps JavaScript API 未返回 Map、Rectangle 或 Geocoder 能力。');
+    throw new Error(tx('googleMapsLoader.missingCapabilities'));
   }
 
   return window.google.maps;

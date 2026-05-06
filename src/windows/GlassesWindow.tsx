@@ -49,7 +49,7 @@ export function GlassesWindow({ transcript = defaultTranscript, logs = defaultLo
       title: trimmed.length > 32 ? `${trimmed.slice(0, 32)}...` : trimmed,
       description: trimmed,
       sourceText: trimmed,
-      priority: /立即|紧急|最高|urgent/i.test(trimmed) ? 'urgent' : 'high',
+      priority: /立即|紧急|最高|urgent|asap|immediate/i.test(trimmed) ? 'urgent' : 'high',
       status: 'queued',
       childTaskIds: [],
       createdAt: now,

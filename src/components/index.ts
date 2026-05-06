@@ -3,3 +3,4 @@ export * from './TelemetryChart';
 export * from './TerminalLog';
 export * from './Toolbar';
 export * from './WorldScene';
+export * from './sceneOverlay';

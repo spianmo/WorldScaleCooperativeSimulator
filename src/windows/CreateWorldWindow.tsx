@@ -1,12 +1,17 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { type ReactElement, useEffect, useMemo, useRef, useState } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
 import {
-  FiCalendar,
+  FiArrowLeft,
+  FiArrowRight,
+  FiCheck,
   FiCloud,
   FiCloudDrizzle,
   FiCloudRain,
   FiCompass,
+  FiCrop,
   FiInfo,
   FiMinus,
   FiPlus,
@@ -16,6 +21,7 @@ import {
   FiWind,
   FiX,
 } from 'react-icons/fi';
+import { useTranslation } from 'react-i18next';
 import { useSimulation } from '../state';
 import type { GenerateWorldInput } from '../api';
 import { getConfiguredGoogleMapsApiKey, loadGoogleMapsLibraries } from '../utils';
@@ -26,64 +32,65 @@ type WeatherPreset = 'sunny' | 'cloudy' | 'overcast' | 'light_rain' | 'heavy_rai
 type TerrainSource = 'srtm' | 'aster' | 'custom_dem';
 type ViewMode = 'satellite' | 'street' | 'terrain' | 'building' | 'night';
 
-const defaultStreetSpec = {
-  name: '陆家嘴街区世界-20240524',
-  description: '',
-  searchText: '上海陆家嘴、深圳南山科技园',
-  streetAddress: '上海市浦东新区陆家嘴',
-  district: '上海市浦东新区',
-  latitude: 31.230416,
-  longitude: 121.473701,
-  radiusM: 860,
-  dataSource: 'Google Photorealistic 3D Tiles',
-  previewQuality: 'high' as const,
-  worldTime: '2024-05-24 14:32:18',
-  weather: 'sunny' as WeatherPreset,
-  terrainSource: 'srtm' as TerrainSource,
+function buildDefaultStreetSpec(t: (key: string) => string) {
+  return {
+    name: t('createWorldWindow.defaultSpec.name'),
+    description: '',
+    searchText: t('createWorldWindow.defaultSpec.searchText'),
+    streetAddress: t('createWorldWindow.defaultSpec.streetAddress'),
+    district: t('createWorldWindow.defaultSpec.district'),
+    latitude: 22.293410,
+    longitude: 114.169920,
+    radiusM: 150,
+    dataSource: 'Google Photorealistic 3D Tiles',
+    previewQuality: 'high' as const,
+    worldTime: '2024-05-24 14:32:18',
+    weather: 'sunny' as WeatherPreset,
+    terrainSource: 'srtm' as TerrainSource,
+  };
+}
+
+const layerGroupConfig = [
+  {
+    titleKey: 'createWorldWindow.layerGroups.base',
+    items: ['road', 'building', 'water', 'green', 'terrain'],
+  },
+  {
+    titleKey: 'createWorldWindow.layerGroups.semantic',
+    items: ['sidewalk', 'bike', 'trafficSign', 'poi'],
+  },
+  {
+    titleKey: 'createWorldWindow.layerGroups.enhanced',
+    items: ['building3d', 'tree3d', 'roadFurniture3d'],
+  },
+] as const;
+
+const viewModeIds: ViewMode[] = ['satellite', 'street', 'terrain', 'building', 'night'];
+
+const terrainSourceIds: TerrainSource[] = ['srtm', 'aster', 'custom_dem'];
+
+const weatherPresetConfig: Array<{ id: WeatherPreset; icon: ReactElement }> = [
+  { id: 'sunny', icon: <FiSun /> },
+  { id: 'cloudy', icon: <FiCloud /> },
+  { id: 'overcast', icon: <FiCloud /> },
+  { id: 'light_rain', icon: <FiCloudDrizzle /> },
+  { id: 'heavy_rain', icon: <FiCloudRain /> },
+  { id: 'foggy', icon: <FiWind /> },
+];
+
+type StepId = 1 | 2 | 3;
+
+const stepIds: StepId[] = [1, 2, 3];
+const stepKeyById: Record<StepId, string> = {
+  1: 'createWorldWindow.steps.select',
+  2: 'createWorldWindow.steps.settings',
+  3: 'createWorldWindow.steps.confirm',
 };
-
-const layerGroups = [
-  {
-    title: '基础图层',
-    items: ['道路', '建筑物', '水域', '绿地', '地形'],
-  },
-  {
-    title: '语义图层（可选）',
-    items: ['人行道', '自行车道', '交通标志', 'POI 设施'],
-  },
-  {
-    title: '3D 增强（可选）',
-    items: ['3D 建筑模型', '3D 树木', '3D 道路设施'],
-  },
-];
-
-const viewModes: Array<{ id: ViewMode; label: string }> = [
-  { id: 'satellite', label: '卫星影像' },
-  { id: 'street', label: '街道地图' },
-  { id: 'terrain', label: '地形' },
-  { id: 'building', label: '3D 建筑' },
-  { id: 'night', label: '夜景' },
-];
-
-const terrainSources: Array<{ id: TerrainSource; label: string }> = [
-  { id: 'srtm', label: 'SRTM 30m' },
-  { id: 'aster', label: 'ASTER 30m' },
-  { id: 'custom_dem', label: '自定义 DEM' },
-];
-
-const weatherPresets: Array<{ id: WeatherPreset; label: string; icon: ReactElement }> = [
-  { id: 'sunny', label: '晴天', icon: <FiSun /> },
-  { id: 'cloudy', label: '多云', icon: <FiCloud /> },
-  { id: 'overcast', label: '阴天', icon: <FiCloud /> },
-  { id: 'light_rain', label: '小雨', icon: <FiCloudDrizzle /> },
-  { id: 'heavy_rain', label: '大雨', icon: <FiCloudRain /> },
-  { id: 'foggy', label: '雾天', icon: <FiWind /> },
-];
-
-const steps = ['选择区域', '世界设置', '确认创建'];
 const METERS_PER_LAT_DEGREE = 111_320;
-const MIN_RADIUS_M = 120;
+const MIN_RADIUS_M = 50;
 const MAX_RADIUS_M = 3_000;
+const ZOOM_STEP_FACTOR = 0.82;
+const VIEWPORT_PADDING = { top: 56, right: 56, bottom: 56, left: 56 };
 
 const viewModeToGoogleMapTypeId: Record<ViewMode, GoogleMapsMapTypeId> = {
   satellite: 'satellite',
@@ -95,6 +102,20 @@ const viewModeToGoogleMapTypeId: Record<ViewMode, GoogleMapsMapTypeId> = {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function parseWorldTime(value: string): Date | null {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) {
+    return null;
+  }
+  const [, y, mo, d, h, mi, s = '0'] = match;
+  return new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
+}
+
+function formatWorldTime(date: Date): string {
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function normalizeLongitude(value: number) {
@@ -132,15 +153,36 @@ function createBoundsFromRadius(lat: number, lon: number, radiusM: number): Goog
 }
 
 function zoomFromRadius(radiusM: number) {
-  return clamp(Math.round(20 - Math.log2(radiusM / 160)), 12, 19);
+  return clamp(Math.round(21 - Math.log2(radiusM / 60)), 12, 21);
 }
 
-function googleMapsSizeLabel() {
-  return getConfiguredGoogleMapsApiKey() ? 'Google Maps API 已配置' : '缺少 Google Maps API key';
+function googleMapsSizeLabel(t: (key: string) => string) {
+  return getConfiguredGoogleMapsApiKey()
+    ? t('createWorldWindow.statusGoogleMapsConfigured')
+    : t('createWorldWindow.statusGoogleMapsMissing');
+}
+
+function buildStaticMapThumbnailUrl(mode: ViewMode, lat: number, lon: number, apiKey: string) {
+  const center = `${lat.toFixed(6)},${lon.toFixed(6)}`;
+  const base = `https://maps.googleapis.com/maps/api/staticmap?center=${center}&zoom=15&size=160x80&scale=2&key=${encodeURIComponent(apiKey)}`;
+  switch (mode) {
+    case 'satellite':
+      return `${base}&maptype=satellite`;
+    case 'street':
+      return `${base}&maptype=roadmap`;
+    case 'terrain':
+      return `${base}&maptype=terrain`;
+    case 'building':
+      return `${base}&maptype=hybrid`;
+    case 'night':
+      return `${base}&maptype=roadmap&style=invert_lightness:true`;
+  }
 }
 
 export function CreateWorldWindow() {
+  const { t } = useTranslation();
   const { generateWorld, appendLog } = useSimulation();
+  const defaultStreetSpec = useMemo(() => buildDefaultStreetSpec(t), [t]);
   const [name, setName] = useState(defaultStreetSpec.name);
   const [description, setDescription] = useState(defaultStreetSpec.description);
   const [searchText, setSearchText] = useState(defaultStreetSpec.searchText);
@@ -159,14 +201,22 @@ export function CreateWorldWindow() {
   const [timeSpeed, setTimeSpeed] = useState(1);
   const [windSpeed, setWindSpeed] = useState(5);
   const [lightHour, setLightHour] = useState(14.53);
-  const [status, setStatus] = useState('正在加载 Google Maps 区域选择器...');
-  const [mapStatus, setMapStatus] = useState(googleMapsSizeLabel);
+  const [status, setStatus] = useState(() => t('createWorldWindow.statusGoogleMapsLoading'));
+  const [mapStatus, setMapStatus] = useState(() => googleMapsSizeLabel(t));
   const [isMapReady, setIsMapReady] = useState(false);
+  const [currentStep, setCurrentStep] = useState<StepId>(1);
+  const [submitted, setSubmitted] = useState(false);
+  const [isDrawingMode, setIsDrawingMode] = useState(false);
+  const [errorDetail, setErrorDetail] = useState<{ summary: string; detail: string } | null>(null);
+  const [currentZoom, setCurrentZoom] = useState<number>(() => zoomFromRadius(150));
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const googleMapRef = useRef<GoogleMapsMap | null>(null);
   const selectionRectangleRef = useRef<GoogleMapsRectangle | null>(null);
   const geocoderRef = useRef<GoogleMapsGeocoder | null>(null);
+  const drawingManagerRef = useRef<GoogleMapsDrawingManager | null>(null);
+  const drawingOverlayTypeRef = useRef<string>('rectangle');
   const isSyncingRectangleRef = useRef(false);
+  const isRectangleDrivenUpdateRef = useRef(false);
 
   const preview = useMemo(() => {
     const areaKm2 = Math.max(0.1, Math.PI * (radiusM / 1000) ** 2);
@@ -181,6 +231,17 @@ export function CreateWorldWindow() {
       altitudeM: Math.max(6, Math.round(radiusM / 70)),
     };
   }, [radiusM]);
+
+  const mapThumbnailUrls = useMemo(() => {
+    const apiKey = getConfiguredGoogleMapsApiKey();
+    if (!apiKey) {
+      return null;
+    }
+    return viewModeIds.reduce<Record<ViewMode, string>>((acc, modeId) => {
+      acc[modeId] = buildStaticMapThumbnailUrl(modeId, latitude, longitude, apiKey);
+      return acc;
+    }, {} as Record<ViewMode, string>);
+  }, [latitude, longitude]);
 
   useEffect(() => {
     let isDisposed = false;
@@ -198,6 +259,7 @@ export function CreateWorldWindow() {
         }
 
         const initialCenter = { lat: latitude, lng: longitude };
+        const initialBounds = createBoundsFromRadius(latitude, longitude, radiusM);
         const map = new maps.Map(mapContainerRef.current, {
           center: initialCenter,
           zoom: preview.zoomLevel,
@@ -212,7 +274,7 @@ export function CreateWorldWindow() {
           zoomControl: false,
         });
         const selectionRectangle = new maps.Rectangle({
-          bounds: createBoundsFromRadius(latitude, longitude, radiusM),
+          bounds: initialBounds,
           draggable: true,
           editable: true,
           fillColor: '#1a73e8',
@@ -222,6 +284,8 @@ export function CreateWorldWindow() {
           strokeOpacity: 0.94,
           strokeWeight: 3,
         });
+        // 让初始选区在视口内留出 padding，保证选框始终小于视口
+        map.fitBounds(initialBounds, VIEWPORT_PADDING);
 
         googleMapRef.current = map;
         selectionRectangleRef.current = selectionRectangle;
@@ -239,10 +303,11 @@ export function CreateWorldWindow() {
           }
 
           const center = bounds.getCenter();
+          isRectangleDrivenUpdateRef.current = true;
           setLatitude(Number(center.lat().toFixed(6)));
           setLongitude(Number(center.lng().toFixed(6)));
           setRadiusM(estimateRadiusFromBounds(bounds));
-          setStatus('已更新 Google Maps 实际选择区域');
+          setStatus(t('createWorldWindow.statusRectangleUpdated'));
         }));
         listeners.push(map.addListener('click', (event?: GoogleMapsMapMouseEvent) => {
           if (!event?.latLng) {
@@ -253,14 +318,71 @@ export function CreateWorldWindow() {
           const lng = Number(event.latLng.lng().toFixed(6));
           setLatitude(lat);
           setLongitude(lng);
-          setStatus('已将选择区域中心移动到地图点击位置');
+          setStatus(t('createWorldWindow.statusMapClicked'));
+        }));
+        listeners.push(map.addListener('zoom_changed', () => {
+          const z = map.getZoom();
+          if (typeof z === 'number') {
+            setCurrentZoom(z);
+          }
         }));
 
+        // 异步加载 drawing 库，加载失败不阻断主流程，仅禁用拖拉绘制
+        try {
+          const drawingLib = (await maps.importLibrary('drawing')) as GoogleMapsDrawingLibrary;
+          if (!isDisposed && drawingLib?.DrawingManager) {
+            drawingOverlayTypeRef.current = drawingLib.OverlayType?.RECTANGLE ?? 'rectangle';
+            const drawingManager = new drawingLib.DrawingManager({
+              drawingMode: null,
+              drawingControl: false,
+              rectangleOptions: {
+                draggable: false,
+                editable: false,
+                clickable: false,
+                fillColor: '#1a73e8',
+                fillOpacity: 0.18,
+                strokeColor: '#1a73e8',
+                strokeOpacity: 0.94,
+                strokeWeight: 3,
+              },
+            });
+            drawingManager.setMap(map);
+            drawingManagerRef.current = drawingManager;
+
+            listeners.push(drawingManager.addListener('rectanglecomplete', (drawnRect) => {
+              const drawnBounds = drawnRect.getBounds();
+              drawnRect.setMap(null);
+              drawingManager.setDrawingMode(null);
+              setIsDrawingMode(false);
+              if (!drawnBounds) {
+                return;
+              }
+              const ne = drawnBounds.getNorthEast();
+              const sw = drawnBounds.getSouthWest();
+              const newBoundsLiteral: GoogleMapsBoundsLiteral = {
+                north: ne.lat(),
+                south: sw.lat(),
+                east: ne.lng(),
+                west: sw.lng(),
+              };
+              const center = drawnBounds.getCenter();
+              isRectangleDrivenUpdateRef.current = true;
+              selectionRectangleRef.current?.setBounds(newBoundsLiteral);
+              setLatitude(Number(center.lat().toFixed(6)));
+              setLongitude(Number(center.lng().toFixed(6)));
+              setRadiusM(estimateRadiusFromBounds(drawnBounds));
+              setStatus(t('createWorldWindow.statusRectangleDrawn'));
+            }));
+          }
+        } catch {
+          // Drawing 库不可用时静默回退到基本编辑能力
+        }
+
         setIsMapReady(true);
-        setMapStatus('Google Maps API 区域选择器已就绪');
-        setStatus('拖动蓝色矩形或搜索地点来选取真实区域');
+        setMapStatus(t('createWorldWindow.statusGoogleMapsReady'));
+        setStatus(t('createWorldWindow.statusRectangleHint'));
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Google Maps API 加载失败';
+        const message = error instanceof Error ? error.message : t('createWorldWindow.statusGoogleMapsLoadFailed');
         setIsMapReady(false);
         setMapStatus(message);
         setStatus(message);
@@ -278,6 +400,13 @@ export function CreateWorldWindow() {
       if (googleMapRef.current && window.google?.maps.event) {
         window.google.maps.event.clearInstanceListeners(googleMapRef.current);
       }
+      if (drawingManagerRef.current) {
+        drawingManagerRef.current.setMap(null);
+        if (window.google?.maps.event) {
+          window.google.maps.event.clearInstanceListeners(drawingManagerRef.current);
+        }
+        drawingManagerRef.current = null;
+      }
     };
   }, []);
 
@@ -292,33 +421,75 @@ export function CreateWorldWindow() {
       return;
     }
 
+    if (isRectangleDrivenUpdateRef.current) {
+      isRectangleDrivenUpdateRef.current = false;
+      return;
+    }
+
     isSyncingRectangleRef.current = true;
-    map.setCenter({ lat: latitude, lng: longitude });
-    map.setZoom(preview.zoomLevel);
-    rectangle.setBounds(createBoundsFromRadius(latitude, longitude, radiusM));
+    const nextBounds = createBoundsFromRadius(latitude, longitude, radiusM);
+    rectangle.setBounds(nextBounds);
+    // fitBounds 自动选择合适的 zoom，让矩形带 padding 完全位于视口内
+    map.fitBounds(nextBounds, VIEWPORT_PADDING);
     window.setTimeout(() => {
       isSyncingRectangleRef.current = false;
     }, 0);
-  }, [latitude, longitude, radiusM, preview.zoomLevel]);
+  }, [latitude, longitude, radiusM]);
+
+  const locateCurrentPosition = () => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setStatus(t('createWorldWindow.statusGeoUnavailable'));
+      return;
+    }
+
+    setStatus(t('createWorldWindow.statusGeoResolving'));
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = Number(position.coords.latitude.toFixed(6));
+        const lng = Number(position.coords.longitude.toFixed(6));
+        setLatitude(lat);
+        setLongitude(lng);
+        googleMapRef.current?.setCenter({ lat, lng });
+        if (geocoderRef.current) {
+          void geocoderRef.current.geocode({ location: { lat, lng } })
+            .then(({ results }) => {
+              const address = results[0]?.formatted_address;
+              if (address) {
+                setStreetAddress(address);
+                setDistrict(address);
+              }
+            })
+            .catch(() => undefined);
+        }
+        setStatus(t('createWorldWindow.statusGeoResolved', { lat: lat.toFixed(6), lon: lng.toFixed(6) }));
+      },
+      (error) => {
+        setStatus(t('createWorldWindow.statusGeoFailed', {
+          message: error.message || t('createWorldWindow.statusGeoFailedFallback'),
+        }));
+      },
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 0 },
+    );
+  };
 
   const searchRegion = () => {
     const query = searchText.trim();
     if (!query) {
-      setStatus('请输入要选取的真实地点或街区名称');
+      setStatus(t('createWorldWindow.statusEmptyQuery'));
       return;
     }
 
     if (!geocoderRef.current) {
-      setStatus('Google Maps API 尚未就绪，无法搜索区域');
+      setStatus(t('createWorldWindow.statusGeocoderNotReady'));
       return;
     }
 
-    setStatus(`正在通过 Google Maps API 搜索：${query}`);
+    setStatus(t('createWorldWindow.statusSearching', { query }));
     void geocoderRef.current.geocode({ address: query })
       .then(({ results }) => {
         const firstResult = results[0];
         if (!firstResult) {
-          setStatus(`Google Maps 未找到区域：${query}`);
+          setStatus(t('createWorldWindow.statusSearchEmpty', { query }));
           return;
         }
 
@@ -333,14 +504,16 @@ export function CreateWorldWindow() {
         setLatitude(nextLat);
         setLongitude(nextLon);
         setRadiusM(nextRadius);
-        setStatus(`已选取 Google Maps 区域：${firstResult.formatted_address ?? query}`);
+        setStatus(t('createWorldWindow.statusSearchSelected', {
+          place: firstResult.formatted_address ?? query,
+        }));
       })
-      .catch((error) => setStatus(error instanceof Error ? error.message : 'Google Maps 搜索失败'));
+      .catch((error) => setStatus(error instanceof Error ? error.message : t('createWorldWindow.statusSearchFailed')));
   };
 
   const submit = () => {
     const input: GenerateWorldInput['input'] = {
-      name: name.trim() || `${streetAddress || searchText} 实景世界`,
+      name: name.trim() || t('createWorldWindow.defaultWorldName', { place: streetAddress || searchText }),
       seed: Date.now(),
       object_density: preview.density,
       street_address: streetAddress.trim() || searchText.trim(),
@@ -352,21 +525,71 @@ export function CreateWorldWindow() {
       preview_quality: previewQuality,
     };
 
-    setStatus('正在生成 Google Photorealistic 3D Tiles 视角所需的街区坐标与仿真语义...');
+    setStatus(t('createWorldWindow.statusGenerating'));
+    setErrorDetail(null);
     void generateWorld(input)
       .then(() => {
-        setStatus(`已创建世界：${input.name}`);
+        setStatus(t('createWorldWindow.statusGenerated', { name: input.name }));
+        setSubmitted(true);
         appendLog({
           level: 'info',
           scope: 'world',
-          message: `已创建 Google Maps 选区世界：${input.name}，中心 ${latitude.toFixed(6)},${longitude.toFixed(6)}，半径 ${radiusM}m`,
+          message: t('createWorldWindow.logCreated', {
+            name: input.name,
+            lat: latitude.toFixed(6),
+            lon: longitude.toFixed(6),
+            radius: radiusM,
+          }),
         });
+        closeDialog();
       })
-      .catch((error) => setStatus(error instanceof Error ? error.message : '创建世界失败'));
+      .catch((error) => {
+        const summary = error instanceof Error ? error.message : String(error);
+        const detail = error instanceof Error
+          ? error.stack && error.stack.includes(summary)
+            ? error.stack
+            : `${error.name}: ${summary}${error.stack ? `\n${error.stack}` : ''}`
+          : summary;
+        console.error('[create-world] generate world failed', error);
+        appendLog({
+          level: 'error',
+          scope: 'world',
+          message: t('createWorldWindow.logFailed', { message: summary }),
+          details: detail,
+        });
+        setStatus(t('createWorldWindow.statusFailed'));
+        setErrorDetail({ summary, detail });
+      });
+  };
+
+  const goToStep = (next: StepId) => {
+    setCurrentStep(next);
+    setStatus(t('createWorldWindow.statusEntered', { name: t(stepKeyById[next]) }));
+  };
+
+  const handleNext = () => {
+    if (currentStep < 3) {
+      goToStep((currentStep + 1) as StepId);
+      return;
+    }
+
+    submit();
+  };
+
+  const handlePrev = () => {
+    if (currentStep <= 1) {
+      return;
+    }
+
+    goToStep((currentStep - 1) as StepId);
   };
 
   const previewWorld = () => {
-    setStatus(`预览世界：${streetAddress}，预计 ${preview.buildings} 栋建筑、${preview.roads} 条道路`);
+    setStatus(t('createWorldWindow.statusPreview', {
+      place: streetAddress,
+      buildings: preview.buildings,
+      roads: preview.roads,
+    }));
   };
 
   const closeDialog = () => {
@@ -403,20 +626,42 @@ export function CreateWorldWindow() {
         }}>
           <div className="create-world-brand" onMouseDown={startWindowDrag}>
             <img src={terminalLogoMarkUrl} alt="" />
-            <span>TerminalLink</span>
+            <span className="brand-wordmark">
+              <span className="brand-wordmark-prefix">Terminal</span>
+              <span className="brand-wordmark-suffix">Link</span>
+            </span>
           </div>
           <div className="create-world-title-block" onMouseDown={startWindowDrag}>
-            <h1 id="create-world-title">新建世界</h1>
-            <p>选择区域并创建你的真实街区世界（Google Maps API 负责真实选区）</p>
+            <h1 id="create-world-title">{t('createWorldWindow.headerTitle')}</h1>
+            <p>{t('createWorldWindow.headerSubtitle')}</p>
           </div>
-          <button type="button" className="create-world-close-button" aria-label="关闭创建世界" onClick={closeDialog}>
+          <nav className="create-world-stepper" aria-label={t('createWorldWindow.stepperAria')}>
+            {stepIds.map((stepId) => (
+              <button
+                key={stepId}
+                type="button"
+                className={`create-world-step ${
+                  stepId === currentStep
+                    ? 'create-world-step-active'
+                    : stepId < currentStep
+                      ? 'create-world-step-done'
+                      : ''
+                }`}
+                onClick={() => goToStep(stepId)}
+              >
+                <b>{stepId < currentStep ? <FiCheck /> : stepId}</b>
+                <span>{t(stepKeyById[stepId])}</span>
+              </button>
+            ))}
+          </nav>
+          <button type="button" className="create-world-close-button" aria-label={t('createWorldWindow.closeAria')} onClick={closeDialog}>
             <FiX />
           </button>
         </header>
 
         <main className="create-world-dialog-body">
-          <section className="create-world-map-panel">
-            <StepTitle index={1} title="选择区域" />
+          <section className="create-world-map-panel" data-active={currentStep === 1 ? 'true' : 'false'}>
+            <StepTitle index={1} title={t('createWorldWindow.steps.select')} />
             <div className="create-world-search">
               <FiSearch />
               <input
@@ -430,128 +675,161 @@ export function CreateWorldWindow() {
                     searchRegion();
                   }
                 }}
-                placeholder="搜索地点，例如：上海陆家嘴、深圳南山科技园"
+                placeholder={t('createWorldWindow.searchPlaceholder')}
               />
-              <button type="button" onClick={searchRegion}>搜索</button>
+              <button type="button" onClick={searchRegion}>{t('createWorldWindow.searchButton')}</button>
             </div>
 
             <div className="create-world-map-canvas">
-              <div ref={mapContainerRef} className="create-world-google-map" aria-label="Google Maps 实际区域选择器" />
+              <div ref={mapContainerRef} className="create-world-google-map" aria-label={t('createWorldWindow.mapAria')} />
               {!isMapReady ? (
                 <div className="create-world-map-fallback">
-                  <img src={terminalMapReferenceUrl} alt="城市实景区域预览" />
+                  <img src={terminalMapReferenceUrl} alt={t('createWorldWindow.mapFallbackAlt')} />
                   <strong>{mapStatus}</strong>
-                  <span>配置有效 key 后会直接加载 Google Maps，拖动蓝色矩形即可选取真实区域。</span>
+                  <span>{t('createWorldWindow.mapFallbackHint')}</span>
                 </div>
               ) : null}
-              <div className="create-world-map-toolbar" aria-label="地图缩放定位">
+              <div className="create-world-map-toolbar" aria-label={t('createWorldWindow.mapToolbarAria')}>
                 <button
                   type="button"
-                  aria-label="放大区域"
+                  aria-label={t('createWorldWindow.zoomInAria')}
                   onClick={() => {
-                    setRadiusM((value) => Math.max(MIN_RADIUS_M, value - 80));
-                    setStatus('已放大 Google Maps 选择区域');
+                    setRadiusM((value) => Math.max(MIN_RADIUS_M, Math.round(value * ZOOM_STEP_FACTOR)));
+                    setStatus(t('createWorldWindow.statusZoomedIn'));
                   }}
                 >
                   <FiPlus />
-                  <span>放大</span>
+                  <span>{t('createWorldWindow.zoomIn')}</span>
                 </button>
                 <button
                   type="button"
-                  aria-label="缩小区域"
+                  aria-label={t('createWorldWindow.zoomOutAria')}
                   onClick={() => {
-                    setRadiusM((value) => Math.min(MAX_RADIUS_M, value + 80));
-                    setStatus('已缩小 Google Maps 选择区域');
+                    setRadiusM((value) => Math.min(MAX_RADIUS_M, Math.round(value / ZOOM_STEP_FACTOR)));
+                    setStatus(t('createWorldWindow.statusZoomedOut'));
                   }}
                 >
                   <FiMinus />
-                  <span>缩小</span>
+                  <span>{t('createWorldWindow.zoomOut')}</span>
                 </button>
                 <button
                   type="button"
-                  aria-label="定位区域"
-                  onClick={() => {
-                    googleMapRef.current?.setCenter({ lat: latitude, lng: longitude });
-                    setStatus('已定位到当前 Google Maps 选区中心');
-                  }}
+                  aria-label={t('createWorldWindow.locateAria')}
+                  onClick={locateCurrentPosition}
                 >
                   <FiCompass />
-                  <span>定位</span>
+                  <span>{t('createWorldWindow.locate')}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={isDrawingMode}
+                  aria-label={t('createWorldWindow.drawAria')}
+                  className={isDrawingMode ? 'create-world-map-tool-active' : undefined}
+                  onClick={() => {
+                    const dm = drawingManagerRef.current;
+                    if (!dm) {
+                      setStatus(t('createWorldWindow.statusDrawNotReady'));
+                      return;
+                    }
+                    if (isDrawingMode) {
+                      dm.setDrawingMode(null);
+                      setIsDrawingMode(false);
+                      setStatus(t('createWorldWindow.statusDrawCanceled'));
+                    } else {
+                      dm.setDrawingMode(drawingOverlayTypeRef.current);
+                      setIsDrawingMode(true);
+                      setStatus(t('createWorldWindow.statusDrawingHint'));
+                    }
+                  }}
+                >
+                  <FiCrop />
+                  <span>{isDrawingMode ? t('createWorldWindow.drawActive') : t('createWorldWindow.draw')}</span>
                 </button>
               </div>
-              <div className="create-world-area-badge">当前选择区域：{preview.areaKm2.toFixed(2)} km²</div>
+              <div className="create-world-area-badge">{t('createWorldWindow.currentArea', { value: preview.areaKm2.toFixed(2) })}</div>
               <div className="create-world-map-tabs">
-                {viewModes.map((mode) => (
+                {viewModeIds.map((modeId) => (
                   <button
-                    key={mode.id}
+                    key={modeId}
                     type="button"
-                    className={viewMode === mode.id ? 'create-world-map-tab-active' : undefined}
-                    onClick={() => setViewMode(mode.id)}
+                    className={viewMode === modeId ? 'create-world-map-tab-active' : undefined}
+                    onClick={() => setViewMode(modeId)}
                   >
-                    <img src={terminalMapReferenceUrl} alt="" />
-                    <span>{mode.label}</span>
+                    <img src={mapThumbnailUrls?.[modeId] ?? terminalMapReferenceUrl} alt="" />
+                    <span>{t(`createWorldWindow.viewModes.${modeId}`)}</span>
                   </button>
                 ))}
               </div>
               <div className="create-world-map-metrics">
-                <Metric label="中心坐标" value={`${latitude.toFixed(6)}° N, ${longitude.toFixed(6)}° E`} />
-                <Metric label="缩放级别" value={String(preview.zoomLevel)} />
-                <Metric label="海拔高度" value={`${preview.altitudeM.toFixed(1)} m`} />
+                <Metric label={t('createWorldWindow.metric.centerCoord')} value={t('createWorldWindow.metric.coord', { lat: latitude.toFixed(6), lon: longitude.toFixed(6) })} />
+                <Metric label={t('createWorldWindow.metric.zoomLevel')} value={String(currentZoom)} />
+                <Metric label={t('createWorldWindow.metric.altitude')} value={t('createWorldWindow.metric.altitudeValue', { value: preview.altitudeM.toFixed(1) })} />
               </div>
             </div>
-
-            <StepTitle index={2} title="世界设置" compact />
           </section>
 
-          <section className="create-world-settings-panel">
-            <h2>世界设置</h2>
+          <section className="create-world-settings-panel" data-active={currentStep === 2 ? 'true' : 'false'}>
+            <StepTitle index={2} title={t('createWorldWindow.steps.settings')} />
             <div className="create-world-settings-scroll">
               <label className="create-world-field">
-                <span>世界名称</span>
-                <input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：陆家嘴街区世界-20240524" />
+                <span>{t('createWorldWindow.fields.worldName')}</span>
+                <input value={name} onChange={(event) => setName(event.target.value)} placeholder={t('createWorldWindow.fields.worldNamePlaceholder')} />
               </label>
               <label className="create-world-field">
-                <span>世界描述（可选）</span>
-                <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="请输入世界描述信息" />
+                <span>{t('createWorldWindow.fields.worldDescription')}</span>
+                <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t('createWorldWindow.fields.worldDescriptionPlaceholder')} />
               </label>
               <label className="create-world-field">
-                <span>世界坐标系</span>
+                <span>{t('createWorldWindow.fields.worldCrs')}</span>
                 <select value="WGS84" disabled>
                   <option value="WGS84">WGS84 (EPSG:4326)</option>
                 </select>
               </label>
               <label className="create-world-field">
-                <span>数据源</span>
+                <span>{t('createWorldWindow.fields.dataSource')}</span>
                 <select value={dataSource} disabled>
                   <option value="Google Photorealistic 3D Tiles">Google Photorealistic 3D Tiles</option>
                 </select>
               </label>
               <label className="create-world-field">
-                <span>世界时间</span>
-                <div className="create-world-input-icon">
-                  <input value={worldTime} onChange={(event) => setWorldTime(event.target.value)} />
-                  <FiCalendar />
-                </div>
+                <span>{t('createWorldWindow.fields.worldTime')}</span>
+                <DatePicker
+                  selected={parseWorldTime(worldTime)}
+                  onChange={(date: Date | null) => {
+                    if (date) {
+                      setWorldTime(formatWorldTime(date));
+                    }
+                  }}
+                  showTimeSelect
+                  timeFormat="HH:mm"
+                  timeIntervals={5}
+                  dateFormat="yyyy-MM-dd HH:mm"
+                  showPopperArrow={false}
+                  popperPlacement="bottom-start"
+                  shouldCloseOnSelect
+                  portalId="rdp-portal"
+                  wrapperClassName="create-world-datepicker"
+                />
               </label>
               <div className="create-world-field">
-                <span>地形数据源</span>
+                <span>{t('createWorldWindow.fields.terrainSource')}</span>
                 <div className="create-world-segmented">
-                  {terrainSources.map((source) => (
+                  {terrainSourceIds.map((sourceId) => (
                     <button
-                      key={source.id}
+                      key={sourceId}
                       type="button"
-                      className={terrainSource === source.id ? 'create-world-segmented-active' : undefined}
-                      onClick={() => setTerrainSource(source.id)}
+                      className={terrainSource === sourceId ? 'create-world-segmented-active' : undefined}
+                      onClick={() => setTerrainSource(sourceId)}
                     >
-                      {source.label}
+                      {t(`createWorldWindow.terrainSources.${sourceId}`)}
                     </button>
                   ))}
                 </div>
               </div>
               <div className="create-world-field">
-                <span>环境预设</span>
+                <span>{t('createWorldWindow.fields.environmentPreset')}</span>
                 <div className="create-world-weather-grid">
-                  {weatherPresets.map((preset) => (
+                  {weatherPresetConfig.map((preset) => (
                     <button
                       key={preset.id}
                       type="button"
@@ -559,37 +837,37 @@ export function CreateWorldWindow() {
                       onClick={() => setWeather(preset.id)}
                     >
                       {preset.icon}
-                      <span>{preset.label}</span>
+                      <span>{t(`createWorldWindow.weather.${preset.id}`)}</span>
                     </button>
                   ))}
                 </div>
               </div>
-              <SliderField label="天气强度" value={weatherStrength} min={0} max={100} suffix="%" onChange={setWeatherStrength} />
-              <SliderField label="时间流速" value={timeSpeed} min={0.2} max={4} step={0.1} suffix="x" onChange={setTimeSpeed} />
-              <SliderField label="风速" value={windSpeed} min={0} max={30} step={0.5} suffix="m/s" onChange={setWindSpeed} />
-              <SliderField label="光照时间" value={lightHour} min={0} max={24} step={0.1} suffix="" onChange={setLightHour} timeLabel />
-              <div className="create-world-hidden-fields" aria-label="在线区域参数">
-                <NumberField label="纬度" value={latitude} onChange={setLatitude} min={-90} max={90} step={0.000001} />
-                <NumberField label="经度" value={longitude} onChange={setLongitude} min={-180} max={180} step={0.000001} />
-                <NumberField label="半径（m）" value={radiusM} onChange={setRadiusM} min={MIN_RADIUS_M} max={MAX_RADIUS_M} step={50} />
+              <SliderField label={t('createWorldWindow.fields.weatherStrength')} value={weatherStrength} min={0} max={100} suffix="%" onChange={setWeatherStrength} />
+              <SliderField label={t('createWorldWindow.fields.timeSpeed')} value={timeSpeed} min={0.2} max={4} step={0.1} suffix="x" onChange={setTimeSpeed} />
+              <SliderField label={t('createWorldWindow.fields.windSpeed')} value={windSpeed} min={0} max={30} step={0.5} suffix="m/s" onChange={setWindSpeed} />
+              <TimeSliderField label={t('createWorldWindow.fields.lightHour')} value={lightHour} min={0} max={24} step={0.1} onChange={setLightHour} />
+              <div className="create-world-hidden-fields" aria-label={t('createWorldWindow.hiddenFieldsAria')}>
+                <NumberField label={t('createWorldWindow.fields.latitude')} value={latitude} onChange={setLatitude} min={-90} max={90} step={0.000001} />
+                <NumberField label={t('createWorldWindow.fields.longitude')} value={longitude} onChange={setLongitude} min={-180} max={180} step={0.000001} />
+                <NumberField label={t('createWorldWindow.fields.radius')} value={radiusM} onChange={setRadiusM} min={MIN_RADIUS_M} max={MAX_RADIUS_M} step={50} />
               </div>
             </div>
           </section>
 
-          <aside className="create-world-layers-panel">
-            <h2>数据图层</h2>
+          <aside className="create-world-layers-panel" data-active={currentStep === 3 ? 'true' : 'false'}>
+            <h2>{t('createWorldWindow.layersTitle')}</h2>
             <div className="create-world-layer-scroll">
               <label className="create-world-layer-item create-world-layer-all">
                 <input type="checkbox" checked readOnly />
-                <span>全部图层</span>
+                <span>{t('createWorldWindow.allLayers')}</span>
               </label>
-              {layerGroups.map((group) => (
-                <div key={group.title} className="create-world-layer-group">
-                  <h3>{group.title}</h3>
-                  {group.items.map((item) => (
-                    <label key={item} className="create-world-layer-item">
+              {layerGroupConfig.map((group) => (
+                <div key={group.titleKey} className="create-world-layer-group">
+                  <h3>{t(group.titleKey)}</h3>
+                  {group.items.map((itemKey) => (
+                    <label key={itemKey} className="create-world-layer-item">
                       <input type="checkbox" checked readOnly />
-                      <span>{item}</span>
+                      <span>{t(`createWorldWindow.layers.${itemKey}`)}</span>
                     </label>
                   ))}
                 </div>
@@ -598,37 +876,93 @@ export function CreateWorldWindow() {
             <div className="create-world-data-note">
               <div>
                 <FiInfo />
-                <strong>数据说明</strong>
+                <strong>{t('createWorldWindow.dataNoteTitle')}</strong>
               </div>
-              <p>选择区域直接使用 Google Maps API；Google 3D Tiles 负责真实城市网格，OSM 仅用于任务路径和 POI 语义。</p>
+              <p>{t('createWorldWindow.dataNoteBody')}</p>
             </div>
           </aside>
         </main>
 
         <footer className="create-world-dialog-footer">
           <button type="button" className="create-world-secondary-button" onClick={closeDialog}>
-            取消
+            {t('createWorldWindow.cancel')}
           </button>
-          <div className="create-world-footer-steps" aria-label="创建步骤">
-            {steps.map((step, index) => (
-              <span key={step} className={index === 0 ? 'create-world-footer-step-active' : undefined}>
-                <b>{index + 1}</b>
-                {step}
-              </span>
-            ))}
-          </div>
+          <span className="create-world-status" role="status">{status}</span>
           <div className="create-world-footer-actions">
-            <button type="button" className="create-world-secondary-button" onClick={previewWorld}>
-              预览世界
+            <button
+              type="button"
+              className="create-world-secondary-button"
+              onClick={handlePrev}
+              disabled={currentStep === 1}
+            >
+              <FiArrowLeft />
+              {t('createWorldWindow.prevStep')}
             </button>
-            <button type="button" className="create-world-primary-button" onClick={submit}>
-              <FiSave />
-              创建世界
+            <button type="button" className="create-world-secondary-button" onClick={previewWorld}>
+              {t('createWorldWindow.previewWorld')}
+            </button>
+            <button
+              type="button"
+              className="create-world-primary-button"
+              onClick={handleNext}
+              disabled={submitted && currentStep === 3}
+            >
+              {currentStep === 3 ? <FiSave /> : null}
+              {currentStep === 3
+                ? t('createWorldWindow.create')
+                : t('createWorldWindow.nextStep', { name: t(stepKeyById[(currentStep + 1) as StepId]) })}
+              {currentStep < 3 ? <FiArrowRight /> : null}
             </button>
           </div>
         </footer>
 
-        <div className="create-world-status" role="status">{status}</div>
+        {errorDetail ? (
+          <div
+            className="create-world-error-overlay"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="create-world-error-title"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) {
+                setErrorDetail(null);
+              }
+            }}
+          >
+            <div className="create-world-error-card">
+              <div className="create-world-error-header">
+                <strong id="create-world-error-title">{t('createWorldWindow.errorTitle')}</strong>
+                <button
+                  type="button"
+                  className="create-world-error-close"
+                  aria-label={t('createWorldWindow.errorClose')}
+                  onClick={() => setErrorDetail(null)}
+                >
+                  <FiX />
+                </button>
+              </div>
+              <p className="create-world-error-summary">{errorDetail.summary}</p>
+              <pre className="create-world-error-detail">{errorDetail.detail}</pre>
+              <div className="create-world-error-actions">
+                <button
+                  type="button"
+                  className="create-world-secondary-button"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(errorDetail.detail).catch(() => undefined);
+                  }}
+                >
+                  {t('createWorldWindow.errorCopy')}
+                </button>
+                <button
+                  type="button"
+                  className="create-world-primary-button"
+                  onClick={() => setErrorDetail(null)}
+                >
+                  {t('createWorldWindow.errorClose')}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </section>
     </div>
   );
@@ -684,7 +1018,6 @@ function SliderField({
   max,
   step = 1,
   suffix,
-  timeLabel = false,
   onChange,
 }: {
   label: string;
@@ -693,12 +1026,9 @@ function SliderField({
   max: number;
   step?: number;
   suffix: string;
-  timeLabel?: boolean;
   onChange: (value: number) => void;
 }) {
-  const displayValue = timeLabel
-    ? `${Math.floor(value).toString().padStart(2, '0')}:${Math.round((value % 1) * 60).toString().padStart(2, '0')}`
-    : `${Number(value.toFixed(step < 1 ? 1 : 0))}${suffix ? ` ${suffix}` : ''}`;
+  const displayValue = `${Number(value.toFixed(step < 1 ? 1 : 0))}${suffix ? ` ${suffix}` : ''}`;
 
   return (
     <label className="create-world-slider">
@@ -713,5 +1043,55 @@ function SliderField({
       />
       <strong>{displayValue}</strong>
     </label>
+  );
+}
+
+function TimeSliderField({
+  label,
+  value,
+  min,
+  max,
+  step = 0.1,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  onChange: (value: number) => void;
+}) {
+  const clampedValue = Math.max(min, Math.min(max, value));
+  const percent = ((clampedValue - min) / (max - min)) * 100;
+  const hours = Math.floor(clampedValue);
+  const minutes = Math.round((clampedValue - hours) * 60);
+  const display = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+  const startLabel = `${Math.floor(min).toString().padStart(2, '0')}:00`;
+  const endLabel = `${Math.floor(max).toString().padStart(2, '0')}:00`;
+
+  return (
+    <div className="create-world-time-slider">
+      <span className="create-world-time-slider-label">{label}</span>
+      <div className="create-world-time-slider-track">
+        <span
+          className="create-world-time-slider-bubble"
+          style={{ left: `${percent}%` }}
+        >
+          {display}
+        </span>
+        <input
+          type="range"
+          value={clampedValue}
+          min={min}
+          max={max}
+          step={step}
+          onChange={(event) => onChange(Number(event.target.value))}
+        />
+      </div>
+      <div className="create-world-time-slider-endpoints">
+        <span>{startLabel}</span>
+        <span>{endLabel}</span>
+      </div>
+    </div>
   );
 }

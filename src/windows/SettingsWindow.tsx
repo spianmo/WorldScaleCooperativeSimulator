@@ -1,9 +1,29 @@
-import { useState, type ReactNode } from 'react';
-import { FiClock, FiFileText, FiGlobe, FiInfo, FiMoon, FiRotateCcw, FiSave } from 'react-icons/fi';
+import { useEffect, useState, type ReactNode } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { isTauri } from '@tauri-apps/api/core';
+import {
+  FiClock,
+  FiDatabase,
+  FiFileText,
+  FiGlobe,
+  FiInfo,
+  FiMoon,
+  FiRotateCcw,
+  FiSave,
+  FiTrash2,
+  FiX,
+} from 'react-icons/fi';
 import { useTranslation } from 'react-i18next';
-import { Toolbar } from '../components/Toolbar';
 import { useSimulation } from '../state';
 import type { LocaleCode, LogLevel, SimulationSettings, ThemeMode } from '../types';
+import {
+  clearTileCache,
+  getTileCacheConfig,
+  getTileCacheStats,
+  setTileCacheConfig,
+  type TileCacheStats,
+} from '../api';
+import terminalLogoMarkUrl from '../../assets/design/logo.png';
 
 export interface SettingsWindowProps {
   title?: string;
@@ -39,10 +59,10 @@ function SwitchControl({ label, checked, onChange }: SwitchControlProps) {
       role="switch"
       aria-checked={checked}
       aria-label={label}
-      className="sim-switch"
+      className={`create-settings-switch ${checked ? 'create-settings-switch-on' : ''}`}
       onClick={onChange}
     >
-      <span className="sim-switch-thumb" />
+      <span className="create-settings-switch-thumb" />
     </button>
   );
 }
@@ -54,7 +74,7 @@ function OptionGroup<T extends string | number>({
   onChange,
 }: OptionGroupProps<T>) {
   return (
-    <div className="sim-segmented-control" role="radiogroup" aria-label={label}>
+    <div className="create-settings-segmented" role="radiogroup" aria-label={label}>
       {options.map((option) => {
         const active = option.value === value;
         return (
@@ -64,7 +84,7 @@ function OptionGroup<T extends string | number>({
             role="radio"
             aria-checked={active}
             aria-pressed={active}
-            className="sim-segmented-option"
+            className={active ? 'create-settings-segmented-active' : undefined}
             onClick={() => onChange(option.value)}
           >
             {option.label}
@@ -85,7 +105,7 @@ function ValueButton({ label, active, onClick }: ValueButtonProps) {
   return (
     <button
       type="button"
-      className="sim-value-button"
+      className={`create-settings-value-button ${active ? 'create-settings-value-button-active' : ''}`}
       aria-pressed={active}
       onClick={onClick}
     >
@@ -93,6 +113,26 @@ function ValueButton({ label, active, onClick }: ValueButtonProps) {
     </button>
   );
 }
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value < 10 ? 2 : 1)} ${units[unitIndex]}`;
+}
+
+const cacheActionRowStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: 8,
+  flexWrap: 'wrap',
+  justifyContent: 'flex-end',
+};
 
 interface SettingItem {
   label: string;
@@ -103,6 +143,7 @@ interface SettingItem {
 
 interface SettingGroup {
   title: string;
+  hint: string;
   icon: ReactNode;
   items: SettingItem[];
 }
@@ -111,6 +152,75 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
   const { t } = useTranslation();
   const { state, setThemeMode, setLocale, setSettings, setWorld, saveWorldSnapshot, resetState, appendLog } = useSimulation();
   const [snapshotStatus, setSnapshotStatus] = useState(t('settingsWindow.status.unsaved'));
+  const [statusMessage, setStatusMessage] = useState(t('settingsWindow.subtitle'));
+  const [cacheStats, setCacheStats] = useState<TileCacheStats | null>(null);
+  const [cacheBusy, setCacheBusy] = useState(false);
+  const [maxBytesGbInput, setMaxBytesGbInput] = useState<string>('5');
+  const [ttlDaysInput, setTtlDaysInput] = useState<string>('30');
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all([getTileCacheStats(), getTileCacheConfig()])
+      .then(([stats, config]) => {
+        if (!active) return;
+        setCacheStats(stats);
+        setMaxBytesGbInput((config.max_bytes / 1024 ** 3).toFixed(2));
+        setTtlDaysInput(String(config.ttl_days));
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const refreshCacheStats = () => {
+    if (cacheBusy) return;
+    setCacheBusy(true);
+    void getTileCacheStats()
+      .then(setCacheStats)
+      .catch(() => undefined)
+      .finally(() => setCacheBusy(false));
+  };
+
+  const handleClearCache = () => {
+    if (cacheBusy) return;
+    setCacheBusy(true);
+    void clearTileCache()
+      .then((stats) => {
+        setCacheStats(stats);
+        appendLog({ level: 'info', scope: 'cache', message: t('settingsWindow.cache.cleared') });
+        setStatusMessage(t('settingsWindow.cache.cleared'));
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setStatusMessage(t('settingsWindow.cache.clearFailed', { error: message }));
+      })
+      .finally(() => setCacheBusy(false));
+  };
+
+  const handleApplyCacheLimits = () => {
+    if (cacheBusy) return;
+    const parsedGb = Number.parseFloat(maxBytesGbInput);
+    const parsedTtl = Number.parseInt(ttlDaysInput, 10);
+    if (!Number.isFinite(parsedGb) || parsedGb <= 0 || !Number.isFinite(parsedTtl) || parsedTtl < 0) {
+      setStatusMessage(t('settingsWindow.cache.invalidInput'));
+      return;
+    }
+    setCacheBusy(true);
+    void setTileCacheConfig({
+      max_bytes: Math.round(parsedGb * 1024 ** 3),
+      ttl_days: parsedTtl,
+    })
+      .then((stats) => {
+        setCacheStats(stats);
+        setStatusMessage(t('settingsWindow.cache.saved'));
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setStatusMessage(t('settingsWindow.cache.saveFailed', { error: message }));
+      })
+      .finally(() => setCacheBusy(false));
+  };
 
   const toggleCoordinateSystem = () => {
     setWorld({
@@ -121,12 +231,21 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
 
   const saveSnapshot = () => {
     void saveWorldSnapshot(`settings_${state.world.id}_${Date.now()}`)
-      .then((result) => setSnapshotStatus(t('settingsWindow.status.savedPath', { path: result.path })))
-      .catch((error) => setSnapshotStatus(error instanceof Error ? error.message : t('settingsWindow.status.saveFailed')));
+      .then((result) => {
+        const text = t('settingsWindow.status.savedPath', { path: result.path });
+        setSnapshotStatus(text);
+        setStatusMessage(text);
+      })
+      .catch((error) => {
+        const text = error instanceof Error ? error.message : t('settingsWindow.status.saveFailed');
+        setSnapshotStatus(text);
+        setStatusMessage(text);
+      });
   };
 
   const markSettingsSaved = () => {
     appendLog({ level: 'info', scope: 'settings', message: t('settingsWindow.status.savedLog') });
+    setStatusMessage(t('settingsWindow.status.savedLog'));
   };
 
   const themeOptions: SettingOption<ThemeMode>[] = [
@@ -158,6 +277,7 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
   const settingsGroups: SettingGroup[] = [
     {
       title: t('settingsWindow.groups.interface'),
+      hint: `${t('settingsWindow.items.themeMode')} · ${t('settingsWindow.items.language')} · ${t('settingsWindow.items.logDensity')}`,
       icon: <FiGlobe />,
       items: [
         {
@@ -203,6 +323,7 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
     },
     {
       title: t('settingsWindow.groups.simulation'),
+      hint: `${t('settingsWindow.items.autosave')} · ${t('settingsWindow.items.tickInterval')} · ${t('settingsWindow.items.saveSnapshot')}`,
       icon: <FiClock />,
       items: [
         {
@@ -246,6 +367,7 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
     },
     {
       title: t('settingsWindow.groups.debug'),
+      hint: `${t('settingsWindow.items.showAxes')} · ${t('settingsWindow.items.logLevel')} · ${t('settingsWindow.items.recordD3Refresh')}`,
       icon: <FiInfo />,
       items: [
         {
@@ -281,74 +403,202 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
             <ValueButton
               label={t('settingsWindow.actions.writeLog')}
               active={false}
-              onClick={() => appendLog({ level: 'debug', scope: 'settings', message: t('settingsWindow.status.d3Logged') })}
+              onClick={() => {
+                appendLog({ level: 'debug', scope: 'settings', message: t('settingsWindow.status.d3Logged') });
+                setStatusMessage(t('settingsWindow.status.d3Logged'));
+              }}
             />
+          ),
+        },
+      ],
+    },
+    {
+      title: t('settingsWindow.groups.tileCache'),
+      hint: t('settingsWindow.cache.hint'),
+      icon: <FiDatabase />,
+      items: [
+        {
+          label: t('settingsWindow.cache.usage'),
+          value: cacheStats
+            ? t('settingsWindow.cache.usageValue', {
+                size: formatBytes(cacheStats.sizeBytes),
+                files: cacheStats.fileCount,
+              })
+            : t('settingsWindow.cache.loading'),
+          active: cacheStats ? cacheStats.sizeBytes > 0 : false,
+          control: (
+            <ValueButton
+              label={t('settingsWindow.cache.refresh')}
+              active={false}
+              onClick={refreshCacheStats}
+            />
+          ),
+        },
+        {
+          label: t('settingsWindow.cache.maxSize'),
+          value: t('settingsWindow.cache.maxSizeValue', { gb: maxBytesGbInput }),
+          active: true,
+          control: (
+            <input
+              type="number"
+              min="0.1"
+              step="0.5"
+              className="create-settings-input"
+              value={maxBytesGbInput}
+              onChange={(event) => setMaxBytesGbInput(event.target.value)}
+              aria-label={t('settingsWindow.cache.maxSize')}
+            />
+          ),
+        },
+        {
+          label: t('settingsWindow.cache.ttl'),
+          value: t('settingsWindow.cache.ttlValue', { days: ttlDaysInput }),
+          active: true,
+          control: (
+            <input
+              type="number"
+              min="0"
+              step="1"
+              className="create-settings-input"
+              value={ttlDaysInput}
+              onChange={(event) => setTtlDaysInput(event.target.value)}
+              aria-label={t('settingsWindow.cache.ttl')}
+            />
+          ),
+        },
+        {
+          label: t('settingsWindow.cache.actions'),
+          value: cacheBusy ? t('settingsWindow.cache.busy') : t('settingsWindow.cache.idle'),
+          active: false,
+          control: (
+            <div style={cacheActionRowStyle}>
+              <button
+                type="button"
+                className="create-settings-secondary-button"
+                onClick={handleApplyCacheLimits}
+                disabled={cacheBusy}
+              >
+                <FiSave />
+                {t('settingsWindow.cache.apply')}
+              </button>
+              <button
+                type="button"
+                className="create-settings-secondary-button"
+                onClick={handleClearCache}
+                disabled={cacheBusy}
+              >
+                <FiTrash2 />
+                {t('settingsWindow.cache.clear')}
+              </button>
+            </div>
           ),
         },
       ],
     },
   ];
 
+  const closeDialog = () => {
+    if (isTauri()) {
+      void getCurrentWindow().close().catch(() => {
+        window.location.hash = '#/world';
+      });
+      return;
+    }
+
+    if (window.history.length > 1) {
+      window.history.back();
+      return;
+    }
+
+    window.location.hash = '#/world';
+  };
+
+  const startWindowDrag = () => {
+    if (!isTauri()) {
+      return;
+    }
+
+    void getCurrentWindow().startDragging().catch(() => undefined);
+  };
+
+  const dialogTitle = title === 'Settings' ? t('settingsWindow.title') : title;
+
   return (
-    <div className="sim-page sim-page-grid">
-      <Toolbar
-        title={title === 'Settings' ? t('settingsWindow.title') : title}
-        subtitle={t('settingsWindow.subtitle')}
-        actions={[
-          { id: 'save', icon: <FiSave />, label: t('settingsWindow.saveSettings'), onClick: markSettingsSaved },
-          { id: 'reset', icon: <FiRotateCcw />, label: t('settingsWindow.resetSettings'), onClick: resetState },
-        ]}
+    <div className="create-settings-dialog-page">
+      <section
+        className="create-settings-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-settings-title"
       >
-        <span className="sim-chip">SettingsWindow</span>
-        <span className="sim-chip">{t('settingsWindow.chipTheme', { mode: state.settings.theme.mode })}</span>
-        <span className="sim-chip">{t('settingsWindow.chipLocale', { locale: state.settings.locale })}</span>
-      </Toolbar>
+        <header
+          className="create-settings-dialog-header"
+          onMouseDown={(event) => {
+            if (event.button === 0 && event.target === event.currentTarget) {
+              startWindowDrag();
+            }
+          }}
+        >
+          <div className="create-settings-brand" onMouseDown={startWindowDrag}>
+            <img src={terminalLogoMarkUrl} alt="" />
+            <span className="brand-wordmark">
+              <span className="brand-wordmark-prefix">Terminal</span>
+              <span className="brand-wordmark-suffix">Link</span>
+            </span>
+          </div>
+          <div className="create-settings-title-block" onMouseDown={startWindowDrag}>
+            <h1 id="create-settings-title">{dialogTitle}</h1>
+            <p>{t('settingsWindow.subtitle')}</p>
+          </div>
+          <div className="create-settings-context-chips" aria-label="settings-context">
+            <span>{t('settingsWindow.chipTheme', { mode: selectedThemeLabel })}</span>
+            <span>{t('settingsWindow.chipLocale', { locale: selectedLocaleLabel })}</span>
+          </div>
+          <button
+            type="button"
+            className="create-settings-close-button"
+            aria-label={t('common.close')}
+            onClick={closeDialog}
+          >
+            <FiX />
+          </button>
+        </header>
 
-      <div
-        className="sim-responsive-grid sim-settings-grid grid items-stretch gap-4"
-      >
-        {settingsGroups.map((group) => (
-          <section key={group.title} className="sim-panel sim-panel-scroll">
-            <div className="sim-section-title">
-              {group.icon}
-              <span>{group.title}</span>
-            </div>
-
-            <div className="sim-scroll-list grid gap-2.5">
-              {group.items.map((item) => (
-                <div key={item.label} className="sim-row sim-setting-row px-3 py-2.5">
-                  <span className="sim-setting-copy grid min-w-0 gap-1">
-                    <span className="text-sm">{item.label}</span>
-                    <span className="break-words text-xs text-sim-muted">{item.value}</span>
-                  </span>
-                  <span className="sim-setting-control">{item.control}</span>
-                </div>
+        <main className="create-settings-dialog-body">
+          <section className="create-settings-form-panel">
+            <div className="create-settings-form-scroll">
+              {settingsGroups.map((group) => (
+                <article key={group.title} className="create-settings-section">
+                  <header className="create-settings-section-header">
+                    <h2>
+                      {group.icon}
+                      <span>{group.title}</span>
+                    </h2>
+                    <span>{group.hint}</span>
+                  </header>
+                  <div className="create-settings-section-body">
+                    {group.items.map((item) => (
+                      <div key={item.label} className="create-settings-row">
+                        <div className="create-settings-row-copy">
+                          <span>{item.label}</span>
+                          <em>{item.value}</em>
+                        </div>
+                        <div className="create-settings-row-control">{item.control}</div>
+                      </div>
+                    ))}
+                  </div>
+                </article>
               ))}
             </div>
           </section>
-        ))}
 
-        <section className="sim-panel sim-settings-actions">
-          <div className="sim-section-title">
-            <FiMoon />
-            <span>{t('settingsWindow.actions.quickSwitch')}</span>
-          </div>
-          <div className="flex flex-wrap gap-2.5">
-            <button className="sim-primary-button" onClick={() => setLocale('en-US')}>{t('locale.enUS')}</button>
-            <button className="sim-primary-button" onClick={() => setLocale('zh-CN')}>{t('locale.zhCN')}</button>
-            <button className="sim-primary-button" onClick={() => setThemeMode('light')}>{t('theme.light')}</button>
-            <button className="sim-primary-button" onClick={() => setThemeMode('dark')}>{t('theme.dark')}</button>
-            <button className="sim-primary-button" onClick={() => setThemeMode('system')}>{t('theme.system')}</button>
-          </div>
-        </section>
-
-        <section className="sim-panel sim-settings-current">
-          <div className="sim-section-title">
-            <FiFileText />
-            <span>{t('settingsWindow.actions.currentSettings')}</span>
-          </div>
-          <div className="sim-scroll-area max-h-[220px]">
-            <pre className="m-0 whitespace-pre-wrap break-words text-xs leading-[1.55] text-sim-text">
+          <aside className="create-settings-summary-panel">
+            <article className="create-settings-summary-card">
+              <header>
+                <FiFileText />
+                <span>{t('settingsWindow.actions.currentSettings')}</span>
+              </header>
+              <pre className="create-settings-summary-pre">
 {JSON.stringify({
   theme: state.settings.theme,
   locale: state.settings.locale,
@@ -358,10 +608,54 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
   terminalLogDensity: state.settings.terminalLogDensity,
   coordinateSystemVisible: state.world.coordinateSystemVisible,
 }, null, 2)}
-            </pre>
+              </pre>
+            </article>
+
+            <article className="create-settings-summary-card">
+              <header>
+                <FiMoon />
+                <span>{t('settingsWindow.actions.quickSwitch')}</span>
+              </header>
+              <div className="create-settings-quick-switch">
+                <button type="button" onClick={() => setLocale('zh-CN')}>{t('locale.zhCN')}</button>
+                <button type="button" onClick={() => setLocale('en-US')}>{t('locale.enUS')}</button>
+                <button type="button" onClick={() => setThemeMode('light')}>{t('theme.light')}</button>
+                <button type="button" onClick={() => setThemeMode('dark')}>{t('theme.dark')}</button>
+                <button type="button" onClick={() => setThemeMode('system')}>{t('theme.system')}</button>
+              </div>
+            </article>
+          </aside>
+        </main>
+
+        <footer className="create-settings-dialog-footer">
+          <button
+            type="button"
+            className="create-settings-secondary-button"
+            onClick={closeDialog}
+          >
+            {t('common.cancel')}
+          </button>
+          <span className="create-settings-status" role="status">{statusMessage}</span>
+          <div className="create-settings-footer-actions">
+            <button
+              type="button"
+              className="create-settings-secondary-button"
+              onClick={resetState}
+            >
+              <FiRotateCcw />
+              {t('settingsWindow.resetSettings')}
+            </button>
+            <button
+              type="button"
+              className="create-settings-primary-button"
+              onClick={markSettingsSaved}
+            >
+              <FiSave />
+              {t('settingsWindow.saveSettings')}
+            </button>
           </div>
-        </section>
-      </div>
+        </footer>
+      </section>
     </div>
   );
 }

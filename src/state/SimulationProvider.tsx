@@ -14,7 +14,7 @@ import type {
   WorldSnapshot,
 } from '../types';
 import type { GenerateWorldInput } from '../api';
-import { createDefaultSimulationState } from '../types';
+import { createEmptySimulationState } from '../types';
 import {
   generateWorld as invokeGenerateWorld,
   listWorldSnapshots as invokeListWorldSnapshots,
@@ -30,7 +30,7 @@ import {
   updatePhysicalRules as invokeUpdatePhysicalRules,
 } from '../api';
 import { openSimulatorWindow, type OpenSimulatorWindowOptions } from '../utils';
-import { setAppLocale } from '../i18n';
+import { setAppLocale, tx } from '../i18n';
 import {
   appendDeviceToState,
   appendGoalToState,
@@ -39,6 +39,7 @@ import {
   replaceWorldInState,
   resetSimulationState,
 } from './simulationStore';
+import { clearDeviceGroups } from './deviceGroups';
 import { publishStateSync, readLatestStateSync, subscribeStateSync } from './windowSync';
 
 export interface SimulationProviderValue {
@@ -150,7 +151,7 @@ export interface SimulationProviderProps extends PropsWithChildren {
 }
 
 export function SimulationProvider({ children, initialState }: SimulationProviderProps) {
-  const initialResolvedState = withResolvedTheme(initialState ?? createDefaultSimulationState());
+  const initialResolvedState = withResolvedTheme(initialState ?? createEmptySimulationState());
   const [state, setState] = useState<SimulationState>(initialResolvedState);
   const [hydrated, setHydrated] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -169,7 +170,7 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
         await saveSimulationState(nextState);
         await publishStateSync(nextState);
       } catch (persistError) {
-        setError(persistError instanceof Error ? persistError.message : '同步仿真状态失败');
+        setError(persistError instanceof Error ? persistError.message : tx('simulationErrors.syncFailed'));
       }
     })();
   };
@@ -227,7 +228,7 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
           return;
         }
 
-        setError(loadError instanceof Error ? loadError.message : '读取仿真状态失败');
+        setError(loadError instanceof Error ? loadError.message : tx('simulationErrors.loadFailed'));
       } finally {
         if (active) {
           setHydrated(true);
@@ -293,7 +294,7 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
 
     // 有活跃任务时由前端统一驱动 tick，保证眼镜下发目标后终端会持续反馈位置。
     let ticking = false;
-    const intervalMs = Math.max(250, state.settings.tickIntervalMs);
+    const intervalMs = Math.max(50, state.settings.tickIntervalMs);
     const timer = window.setInterval(() => {
       if (ticking) {
         return;
@@ -303,7 +304,7 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
       void invokeTickSimulation(1)
         .then(updateState)
         .catch((tickError) => {
-          setError(tickError instanceof Error ? tickError.message : '自动推进仿真 tick 失败');
+          setError(tickError instanceof Error ? tickError.message : tx('simulationErrors.autoTickFailed'));
         })
         .finally(() => {
           ticking = false;
@@ -332,7 +333,7 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
     void invokeUpdateAppSettings(fallbackState.settings)
       .then(updateState)
       .catch((saveError) => {
-        setError(saveError instanceof Error ? saveError.message : '写入主题设置失败');
+        setError(saveError instanceof Error ? saveError.message : tx('simulationErrors.saveThemeFailed'));
       });
   };
 
@@ -348,7 +349,7 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
     void invokeUpdateAppSettings(fallbackState.settings)
       .then(updateState)
       .catch((saveError) => {
-        setError(saveError instanceof Error ? saveError.message : '写入语言设置失败');
+        setError(saveError instanceof Error ? saveError.message : tx('simulationErrors.saveLocaleFailed'));
       });
   };
 
@@ -372,7 +373,7 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
     void invokeUpdateAppSettings(nextSettings.settings)
       .then(updateState)
       .catch((saveError) => {
-        setError(saveError instanceof Error ? saveError.message : '写入设置失败');
+        setError(saveError instanceof Error ? saveError.message : tx('simulationErrors.saveSettingsFailed'));
       });
   };
 
@@ -421,7 +422,7 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
       commitState(nextState, { persist: false });
       setError(null);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : '读取仿真状态失败');
+      setError(loadError instanceof Error ? loadError.message : tx('simulationErrors.loadFailed'));
     } finally {
       setLoading(false);
       setHydrated(true);
@@ -445,18 +446,20 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
       {
         level: 'info',
         scope: 'simulation',
-        message: phase === 'paused' ? '仿真已暂停。' : '仿真已开始。',
+        message: phase === 'paused' ? tx('simulationLog.paused') : tx('simulationLog.resumed'),
       },
     ), { force: true });
   };
 
   const generateWorld = async (input?: GenerateWorldInput['input']) => {
     const generated = await invokeGenerateWorld(input ?? {
-      name: `协同世界-${Date.now().toString().slice(-4)}`,
+      name: tx('simulationLog.defaultWorldName', { suffix: Date.now().toString().slice(-4) }),
       seed: Date.now(),
       object_density: 0.22,
       size: { x: 140, y: 80, z: 140 },
     });
+    // 分组里的 deviceId 在新世界不存在，否则会残留陈旧计数。
+    clearDeviceGroups();
     updateState(generated);
   };
 
@@ -509,13 +512,32 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
     openWorldSnapshot,
   };
 
+  if (!hydrated) {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: '#0f172a',
+          color: '#cbd5f5',
+          fontSize: 13,
+          letterSpacing: 0.4,
+        }}
+      >
+        <span>{tx('simulationLog.bootstrapping')}</span>
+      </div>
+    );
+  }
+
   return <SimulationContext.Provider value={value}>{children}</SimulationContext.Provider>;
 }
 
 export function useSimulation() {
   const context = useContext(SimulationContext);
   if (!context) {
-    throw new Error('useSimulation 必须在 SimulationProvider 内使用');
+    throw new Error(tx('simulator.useSimulationOutsideProvider'));
   }
 
   return context;

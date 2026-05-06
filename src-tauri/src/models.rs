@@ -154,7 +154,7 @@ impl Default for Settings {
             default_world_size: Vector3::new(120.0, 80.0, 120.0),
             default_object_density: 0.18,
             default_device_battery: 100.0,
-            default_tick_seconds: 1.0,
+            default_tick_seconds: 0.2,
             max_devices: 64,
             log_level: LogLevel::Info,
             terminal_log_density: "normal".to_string(),
@@ -831,7 +831,7 @@ fn default_terminal_devices(rules: &PhysicalRules) -> Vec<Device> {
             vec!["ground_move", "payload", "rough_terrain"],
         ),
         terminal_device(
-            "Walker X",
+            "Unitree G1",
             DeviceKind::Humanoid,
             DeviceStatus::Working,
             Vector3::new(32.1, 18.7, 0.0),
@@ -907,7 +907,7 @@ fn default_goal_and_tasks(devices: &[Device]) -> (Goal, Vec<Task>) {
         Task {
             goal_id: goal.id,
             title: "复杂动作验证".to_string(),
-            description: "Walker X 进入人类可达区域做交互验证。".to_string(),
+            description: "Unitree G1 进入人类可达区域做交互验证。".to_string(),
             keywords: vec!["observe".into(), "humanoid".into()],
             status: TaskStatus::Assigned,
             progress: 0.0,

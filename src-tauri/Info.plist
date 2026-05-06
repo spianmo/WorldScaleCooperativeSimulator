@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSLocationUsageDescription</key>
+    <string>仿真器使用您的当前位置作为新建终端设备的初始坐标。位置信息仅在本机使用，不会上传至服务器。</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>仿真器使用您的当前位置作为新建终端设备的初始坐标。位置信息仅在本机使用，不会上传至服务器。</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>仿真器使用您的当前位置作为新建终端设备的初始坐标。位置信息仅在本机使用，不会上传至服务器。</string>
+</dict>
+</plist>

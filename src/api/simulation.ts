@@ -16,6 +16,7 @@ import {
 } from '../types';
 
 import { invokeApp, isTauri } from './invoke';
+import { tx } from '../i18n';
 
 export const SIMULATION_COMMANDS = {
   loadState: 'load_state',
@@ -29,7 +30,77 @@ export const SIMULATION_COMMANDS = {
   saveWorldSnapshot: 'save_world_snapshot',
   listWorldSnapshots: 'list_world_snapshots',
   openWorldSnapshot: 'open_world_snapshot',
+  resolveIpLocation: 'resolve_ip_location',
+  resolveNativeLocation: 'resolve_native_location',
+  tileCacheGetConfig: 'tile_cache_get_config',
+  tileCacheSetConfig: 'tile_cache_set_config',
+  tileCacheStats: 'tile_cache_stats',
+  tileCacheClear: 'tile_cache_clear',
+  tileCacheSweep: 'tile_cache_sweep',
 } as const;
+
+export interface TileCacheConfig {
+  max_bytes: number;
+  ttl_days: number;
+}
+
+export interface TileCacheStats {
+  sizeBytes: number;
+  fileCount: number;
+  maxBytes: number;
+  ttlDays: number;
+}
+
+export interface TileCacheSweepReport {
+  removedFiles: number;
+  removedBytes: number;
+}
+
+export async function getTileCacheConfig() {
+  return invokeApp<TileCacheConfig>(SIMULATION_COMMANDS.tileCacheGetConfig);
+}
+
+export async function setTileCacheConfig(config: TileCacheConfig) {
+  return invokeApp<TileCacheStats>(SIMULATION_COMMANDS.tileCacheSetConfig, { config });
+}
+
+export async function getTileCacheStats() {
+  return invokeApp<TileCacheStats>(SIMULATION_COMMANDS.tileCacheStats);
+}
+
+export async function clearTileCache() {
+  return invokeApp<TileCacheStats>(SIMULATION_COMMANDS.tileCacheClear);
+}
+
+export async function sweepTileCache() {
+  return invokeApp<TileCacheSweepReport>(SIMULATION_COMMANDS.tileCacheSweep);
+}
+
+export interface IpLocationResponse {
+  latitude: number;
+  longitude: number;
+  accuracy_m?: number | null;
+  city?: string | null;
+  region?: string | null;
+  country?: string | null;
+  source: string;
+}
+
+export interface NativeLocationResponse {
+  latitude: number;
+  longitude: number;
+  altitude_m?: number | null;
+  accuracy_m?: number | null;
+  source: string;
+}
+
+export async function resolveIpLocation() {
+  return invokeApp<IpLocationResponse>(SIMULATION_COMMANDS.resolveIpLocation);
+}
+
+export async function resolveNativeLocation() {
+  return invokeApp<NativeLocationResponse>(SIMULATION_COMMANDS.resolveNativeLocation);
+}
 
 export interface GenerateWorldInput {
   input: {
@@ -333,9 +404,9 @@ function mapWorldObject(object: RustWorldObject): WorldObject {
 
 function defaultMaterials(): WorldMaterial[] {
   return [
-    { id: 'mat-asphalt', name: '沥青道路', color: '#2b2f33', friction: 0.84, tags: ['road'] },
-    { id: 'mat-concrete', name: '混凝土建筑', color: '#d8dadd', friction: 0.78, tags: ['building'] },
-    { id: 'mat-grass', name: '草地地表', color: '#5f7d4f', friction: 0.62, tags: ['terrain'] },
+    { id: 'mat-asphalt', name: tx('defaultData.materialAsphaltRoad'), color: '#2b2f33', friction: 0.84, tags: ['road'] },
+    { id: 'mat-concrete', name: tx('defaultData.materialConcreteBuilding'), color: '#d8dadd', friction: 0.78, tags: ['building'] },
+    { id: 'mat-grass', name: tx('defaultData.materialGrassTerrain'), color: '#5f7d4f', friction: 0.62, tags: ['terrain'] },
   ];
 }
 

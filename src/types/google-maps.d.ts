@@ -13,6 +13,7 @@ declare global {
     maps: {
       Map: GoogleMapsMapConstructor;
       Rectangle: GoogleMapsRectangleConstructor;
+      Marker: GoogleMapsMarkerConstructor;
       Size: GoogleMapsSizeConstructor;
       Geocoder: GoogleMapsGeocoderConstructor;
       importLibrary: (libraryName: string) => Promise<unknown>;
@@ -28,11 +29,35 @@ declare global {
 
   interface GoogleMapsMap {
     setCenter: (center: GoogleMapsLatLngLiteral) => void;
+    panTo: (center: GoogleMapsLatLngLiteral) => void;
     setZoom: (zoom: number) => void;
     setMapTypeId: (mapTypeId: GoogleMapsMapTypeId) => void;
     addListener: (eventName: string, handler: (event?: GoogleMapsMapMouseEvent) => void) => GoogleMapsListener;
     getCenter: () => GoogleMapsLatLng | undefined;
     getZoom: () => number | undefined;
+    fitBounds: (
+      bounds: GoogleMapsBoundsLiteral | GoogleMapsLatLngBounds,
+      padding?: number | { top?: number; right?: number; bottom?: number; left?: number },
+    ) => void;
+    setOptions: (options: Partial<GoogleMapsMapOptions>) => void;
+  }
+
+  interface GoogleMapsMarkerConstructor {
+    new (options: GoogleMapsMarkerOptions): GoogleMapsMarker;
+  }
+
+  interface GoogleMapsMarker {
+    setPosition: (position: GoogleMapsLatLngLiteral) => void;
+    getPosition: () => GoogleMapsLatLng | undefined;
+    setMap: (map: GoogleMapsMap | null) => void;
+    addListener: (eventName: string, handler: () => void) => GoogleMapsListener;
+  }
+
+  interface GoogleMapsMarkerOptions {
+    position: GoogleMapsLatLngLiteral;
+    map?: GoogleMapsMap;
+    title?: string;
+    draggable?: boolean;
   }
 
   interface GoogleMapsRectangleConstructor {
@@ -42,6 +67,8 @@ declare global {
   interface GoogleMapsRectangle {
     setBounds: (bounds: GoogleMapsBoundsLiteral) => void;
     getBounds: () => GoogleMapsLatLngBounds | undefined;
+    setMap: (map: GoogleMapsMap | null) => void;
+    setOptions: (options: Partial<GoogleMapsRectangleOptions>) => void;
     addListener: (eventName: string, handler: () => void) => GoogleMapsListener;
   }
 
@@ -59,7 +86,9 @@ declare global {
   }
 
   interface GoogleMapsGeocoder {
-    geocode: (request: { address: string }) => Promise<{ results: GoogleMapsGeocoderResult[] }>;
+    geocode: (
+      request: { address: string } | { location: { lat: number; lng: number } },
+    ) => Promise<{ results: GoogleMapsGeocoderResult[] }>;
   }
 
   interface GoogleMapsGeocoderResult {
@@ -106,15 +135,41 @@ declare global {
   }
 
   interface GoogleMapsRectangleOptions {
-    bounds: GoogleMapsBoundsLiteral;
+    bounds?: GoogleMapsBoundsLiteral;
     draggable?: boolean;
     editable?: boolean;
+    clickable?: boolean;
     fillColor?: string;
     fillOpacity?: number;
-    map: GoogleMapsMap;
+    map?: GoogleMapsMap | null;
     strokeColor?: string;
     strokeOpacity?: number;
     strokeWeight?: number;
+  }
+
+  interface GoogleMapsDrawingManager {
+    setMap: (map: GoogleMapsMap | null) => void;
+    setDrawingMode: (mode: string | null) => void;
+    setOptions: (options: Partial<GoogleMapsDrawingManagerOptions>) => void;
+    addListener: (
+      eventName: string,
+      handler: (overlay: GoogleMapsRectangle) => void,
+    ) => GoogleMapsListener;
+  }
+
+  interface GoogleMapsDrawingManagerConstructor {
+    new (options: GoogleMapsDrawingManagerOptions): GoogleMapsDrawingManager;
+  }
+
+  interface GoogleMapsDrawingManagerOptions {
+    drawingMode?: string | null;
+    drawingControl?: boolean;
+    rectangleOptions?: Partial<Omit<GoogleMapsRectangleOptions, 'bounds' | 'map'>>;
+  }
+
+  interface GoogleMapsDrawingLibrary {
+    DrawingManager: GoogleMapsDrawingManagerConstructor;
+    OverlayType: { RECTANGLE: string };
   }
 
   interface GoogleMapsLatLngLiteral {

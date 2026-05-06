@@ -10,18 +10,25 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bake:models": "node scripts/bake-urdf-to-glb.mjs && node scripts/inject-glb-animations.mjs",
+    "bake:animations": "node scripts/inject-glb-animations.mjs"
   },
   "dependencies": {
     "@cesium/engine": "^17.0.0",
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-geolocation": "^2.3.2",
+    "@types/three": "^0.184.0",
     "cesium": "^1.129.0",
     "d3": "^7.9.0",
     "i18next": "^25.0.0",
     "react": "^19.0.0",
+    "react-datepicker": "^9.1.0",
     "react-dom": "^19.0.0",
     "react-i18next": "^15.0.0",
-    "react-icons": "^5.5.0"
+    "react-icons": "^5.5.0",
+    "three": "^0.184.0",
+    "urdf-loader": "^0.12.7"
   },
   "devDependencies": {
     "@rsbuild/core": "^1.3.0",
@@ -32,6 +39,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "jsdom": "^29.1.1",
     "postcss": "^8.5.13",
     "tailwindcss": "^4.2.4",
     "typescript": "^5.8.0"

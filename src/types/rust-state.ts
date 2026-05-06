@@ -1,3 +1,5 @@
+import { tx } from '../i18n';
+
 export const SUPPORTED_THEME_MODES = ['light', 'dark', 'system'] as const;
 export const SUPPORTED_LOCALES = ['zh-CN', 'en-US'] as const;
 export const SIMULATION_WINDOW_KINDS = [
@@ -271,8 +273,8 @@ function createDefaultWorldSnapshot(): WorldSnapshot {
 
   return {
     id: 'world-default',
-    name: '在线 OpenStreetMap 实景世界',
-    description: '默认主仪表盘等待在线 OpenStreetMap 数据加载；系统不再生成离线街区地图。',
+    name: tx('defaultData.worldName'),
+    description: tx('defaultData.worldDescription'),
     seed: 'seed-0001',
     coordinateSystemVisible: true,
     terrain: {
@@ -286,21 +288,21 @@ function createDefaultWorldSnapshot(): WorldSnapshot {
     materials: [
       {
         id: 'mat-asphalt',
-        name: '沥青',
+        name: tx('defaultData.materialAsphalt'),
         color: '#2b2f33',
         friction: 0.84,
         tags: ['road', 'ground'],
       },
       {
         id: 'mat-concrete',
-        name: '混凝土',
+        name: tx('defaultData.materialConcrete'),
         color: '#d8dadd',
         friction: 0.78,
         tags: ['structure', 'ground'],
       },
       {
         id: 'mat-grass',
-        name: '绿地',
+        name: tx('defaultData.materialGrass'),
         color: '#4f8a5b',
         friction: 0.64,
         tags: ['terrain', 'ground'],
@@ -310,7 +312,7 @@ function createDefaultWorldSnapshot(): WorldSnapshot {
     metadata: {
       data_source: 'OpenStreetMap',
       data_status: 'online_osm_required',
-      street_address: '等待选择在线街区',
+      street_address: tx('defaultData.defaultStreetAddress'),
       center_lat: '',
       center_lon: '',
       radius_m: '',
@@ -454,9 +456,9 @@ function createDefaultDevices(timestamp: string): SimulationDevice[] {
       updatedAt: timestamp,
     },
     {
-      id: 'default-walker-x',
+      id: 'default-unitree-g1',
       kind: 'humanoid',
-      name: 'Walker X',
+      name: 'Unitree G1',
       status: 'working',
       capabilityTags: ['ground_move', 'inspect', 'delivery'],
       physicalProfile: {
@@ -592,8 +594,8 @@ function createDefaultGoalsAndTasks(timestamp: string): Pick<SimulationState, 'g
       id: 'default-task-uav-scan',
       goalId,
       kind: 'inspect',
-      title: 'UAV 高空扫描',
-      description: 'DJI Mavic 3E 对目标区域执行航测扫描。',
+      title: tx('defaultData.task.uavScanTitle'),
+      description: tx('defaultData.task.uavScanDescription'),
       status: 'active',
       assigneeDeviceId: 'default-dji-mavic-3e',
       progress: 0.75,
@@ -605,8 +607,8 @@ function createDefaultGoalsAndTasks(timestamp: string): Pick<SimulationState, 'g
       id: 'default-task-ground-scan',
       goalId,
       kind: 'inspect',
-      title: '地面近距热测',
-      description: 'Unitree Go2 对低矮遮挡区执行近距巡检。',
+      title: tx('defaultData.task.groundScanTitle'),
+      description: tx('defaultData.task.groundScanDescription'),
       status: 'active',
       assigneeDeviceId: 'default-unitree-go2',
       progress: 0.48,
@@ -618,10 +620,10 @@ function createDefaultGoalsAndTasks(timestamp: string): Pick<SimulationState, 'g
       id: 'default-task-verify',
       goalId,
       kind: 'observe',
-      title: '复杂动作验证',
-      description: 'Walker X 进入人类可达区域做交互验证。',
+      title: tx('defaultData.task.verifyTitle'),
+      description: tx('defaultData.task.verifyDescription'),
       status: 'queued',
-      assigneeDeviceId: 'default-walker-x',
+      assigneeDeviceId: 'default-unitree-g1',
       progress: 0,
       notes: 'human_accessible=true',
       createdAt: timestamp,
@@ -633,9 +635,9 @@ function createDefaultGoalsAndTasks(timestamp: string): Pick<SimulationState, 'g
     goals: [
       {
         id: goalId,
-        title: '巡检解放路沿线建筑',
-        description: '对连续城市街区进行多设备协同巡检。',
-        sourceText: '巡检解放路沿线建筑，优先发现遮挡区和异常热源。',
+        title: tx('defaultData.goal.title'),
+        description: tx('defaultData.goal.description'),
+        sourceText: tx('defaultData.goal.sourceText'),
         priority: 'high',
         status: 'active',
         childTaskIds: tasks.map((task) => task.id),
@@ -667,7 +669,7 @@ export function createDefaultSimulationState(): SimulationState {
       locale: 'zh-CN',
       logLevel: 'info',
       autosaveEnabled: true,
-      tickIntervalMs: 1000,
+      tickIntervalMs: 200,
       terminalLogDensity: 'normal',
       maps: {
         googleMaps: {
@@ -695,21 +697,21 @@ export function createDefaultSimulationState(): SimulationState {
         id: 'log-bootstrap',
         level: 'info',
         scope: 'bootstrap',
-        message: 'TerminalLink 单仪表盘初始化完成。',
+        message: tx('defaultData.log.init'),
         timestamp,
       },
       {
         id: 'log-default-gateway',
         level: 'info',
         scope: 'gateway',
-        message: '群体智能网关已载入默认巡检目标。',
+        message: tx('defaultData.log.gatewayLoaded'),
         timestamp,
       },
       {
         id: 'log-default-dji',
         level: 'info',
         scope: 'device',
-        message: 'DJI Mavic 3E 已到达扫描区域上空。',
+        message: tx('defaultData.log.mavicArrived'),
         details: 'default-dji-mavic-3e',
         timestamp,
       },
@@ -717,7 +719,7 @@ export function createDefaultSimulationState(): SimulationState {
         id: 'log-default-go2',
         level: 'warn',
         scope: 'device',
-        message: 'Unitree Go2 电量 52%，继续执行近距巡检。',
+        message: tx('defaultData.log.go2Battery'),
         details: 'default-unitree-go2',
         timestamp,
       },
@@ -726,7 +728,7 @@ export function createDefaultSimulationState(): SimulationState {
       {
         label: 'world-simulator',
         kind: 'world',
-        title: '物理世界仿真场景',
+        title: tx('defaultData.worldWindowTitle'),
         route: '#/world',
         width: 1440,
         height: 900,
@@ -737,6 +739,50 @@ export function createDefaultSimulationState(): SimulationState {
         lastOpenedAt: timestamp,
       },
     ],
+  };
+}
+
+function createEmptyWorldSnapshot(timestamp: string): WorldSnapshot {
+  return {
+    id: 'world-empty',
+    name: '',
+    description: '',
+    seed: '',
+    coordinateSystemVisible: false,
+    terrain: {
+      slopeDeg: 0,
+      weather: 'sunny',
+      precipitationMmH: 0,
+      windMps: 0,
+      visibilityM: 0,
+      surfaceFrictionScale: 1,
+    },
+    materials: [],
+    objects: [],
+    metadata: {
+      data_source: '',
+      data_status: '',
+      street_address: '',
+      center_lat: '',
+      center_lon: '',
+      radius_m: '',
+    },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+export function createEmptySimulationState(): SimulationState {
+  const base = createDefaultSimulationState();
+  return {
+    ...base,
+    phase: 'booting',
+    world: createEmptyWorldSnapshot(base.world.createdAt),
+    devices: [],
+    goals: [],
+    tasks: [],
+    logs: [],
+    windows: [],
   };
 }
 

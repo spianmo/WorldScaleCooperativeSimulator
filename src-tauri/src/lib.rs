@@ -2,6 +2,10 @@ mod llm;
 mod models;
 mod simulation;
 mod storage;
+mod tile_cache;
+
+#[cfg(target_os = "macos")]
+mod macos_location;
 
 use anyhow::Context;
 use chrono::Utc;
@@ -15,6 +19,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Manager, State};
+use tile_cache::{SweepReport, TileCacheConfig, TileCacheStats};
 use uuid::Uuid;
 
 pub struct AppStore {
@@ -302,6 +307,202 @@ fn list_world_snapshots(store: State<'_, AppStore>) -> Result<Vec<WorldSnapshotR
     storage::list_world_snapshots(&store.data_dir).map_err(|error| error.to_string())
 }
 
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct NativeLocationResponse {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub altitude_m: Option<f64>,
+    pub accuracy_m: Option<f64>,
+    pub source: String,
+}
+
+#[tauri::command]
+async fn resolve_native_location() -> Result<NativeLocationResponse, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // CoreLocation 必须运行在带 NSRunLoop 的线程上；用 spawn_blocking 避免阻塞 tokio。
+        tauri::async_runtime::spawn_blocking(|| {
+            macos_location::request_native_location(15.0).map(|coords| NativeLocationResponse {
+                latitude: coords.latitude,
+                longitude: coords.longitude,
+                altitude_m: Some(coords.altitude_m),
+                accuracy_m: Some(coords.horizontal_accuracy_m),
+                source: "macOS CoreLocation".to_string(),
+            })
+        })
+        .await
+        .map_err(|e| format!("CoreLocation 任务调度失败：{e}"))?
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("当前平台未实现原生定位".to_string())
+    }
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct IpLocationResponse {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub accuracy_m: Option<f64>,
+    pub city: Option<String>,
+    pub region: Option<String>,
+    pub country: Option<String>,
+    pub source: String,
+}
+
+async fn fetch_ipapi_co() -> anyhow::Result<IpLocationResponse> {
+    let response = reqwest::Client::builder()
+        .build()?
+        .get("https://ipapi.co/json/")
+        .header("User-Agent", "world-scale-simulator/0.1 (Tauri)")
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        anyhow::bail!("ipapi.co HTTP {}", response.status());
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Body {
+        latitude: Option<f64>,
+        longitude: Option<f64>,
+        city: Option<String>,
+        region: Option<String>,
+        country_name: Option<String>,
+        error: Option<bool>,
+        reason: Option<String>,
+    }
+    let body = response.json::<Body>().await?;
+    if body.error.unwrap_or(false) {
+        anyhow::bail!(
+            "ipapi.co error: {}",
+            body.reason.unwrap_or_else(|| "unknown".to_string())
+        );
+    }
+    let lat = body.latitude.context("ipapi.co 缺少 latitude")?;
+    let lon = body.longitude.context("ipapi.co 缺少 longitude")?;
+    Ok(IpLocationResponse {
+        latitude: lat,
+        longitude: lon,
+        accuracy_m: None,
+        city: body.city,
+        region: body.region,
+        country: body.country_name,
+        source: "ipapi.co".to_string(),
+    })
+}
+
+async fn fetch_ipwhois() -> anyhow::Result<IpLocationResponse> {
+    let response = reqwest::Client::builder()
+        .build()?
+        .get("https://ipwho.is/")
+        .header("User-Agent", "world-scale-simulator/0.1 (Tauri)")
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        anyhow::bail!("ipwho.is HTTP {}", response.status());
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Body {
+        success: Option<bool>,
+        message: Option<String>,
+        latitude: Option<f64>,
+        longitude: Option<f64>,
+        city: Option<String>,
+        region: Option<String>,
+        country: Option<String>,
+    }
+    let body = response.json::<Body>().await?;
+    if !body.success.unwrap_or(true) {
+        anyhow::bail!(
+            "ipwho.is error: {}",
+            body.message.unwrap_or_else(|| "unknown".to_string())
+        );
+    }
+    let lat = body.latitude.context("ipwho.is 缺少 latitude")?;
+    let lon = body.longitude.context("ipwho.is 缺少 longitude")?;
+    Ok(IpLocationResponse {
+        latitude: lat,
+        longitude: lon,
+        accuracy_m: None,
+        city: body.city,
+        region: body.region,
+        country: body.country,
+        source: "ipwho.is".to_string(),
+    })
+}
+
+#[tauri::command]
+async fn resolve_ip_location() -> Result<IpLocationResponse, String> {
+    match fetch_ipapi_co().await {
+        Ok(value) => Ok(value),
+        Err(primary_error) => match fetch_ipwhois().await {
+            Ok(value) => Ok(value),
+            Err(fallback_error) => Err(format!(
+                "ipapi.co 失败：{primary_error}; ipwho.is 失败：{fallback_error}"
+            )),
+        },
+    }
+}
+
+#[tauri::command]
+async fn tile_cache_get_config(store: State<'_, AppStore>) -> Result<TileCacheConfig, String> {
+    Ok(tile_cache::load_config(&store.data_dir))
+}
+
+#[tauri::command]
+async fn tile_cache_set_config(
+    store: State<'_, AppStore>,
+    config: TileCacheConfig,
+) -> Result<TileCacheStats, String> {
+    tile_cache::save_config(&store.data_dir, &config).map_err(|e| e.to_string())?;
+    let cache_root = tile_cache::cache_root(&store.data_dir);
+    let _ = tile_cache::sweep(&cache_root, &config)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(tile_cache::stats(&cache_root, &config).await)
+}
+
+#[tauri::command]
+async fn tile_cache_stats(store: State<'_, AppStore>) -> Result<TileCacheStats, String> {
+    let config = tile_cache::load_config(&store.data_dir);
+    let cache_root = tile_cache::cache_root(&store.data_dir);
+    Ok(tile_cache::stats(&cache_root, &config).await)
+}
+
+#[tauri::command]
+async fn tile_cache_clear(store: State<'_, AppStore>) -> Result<TileCacheStats, String> {
+    let cache_root = tile_cache::cache_root(&store.data_dir);
+    tile_cache::clear(&cache_root).await.map_err(|e| e.to_string())?;
+    let config = tile_cache::load_config(&store.data_dir);
+    Ok(tile_cache::stats(&cache_root, &config).await)
+}
+
+#[tauri::command]
+async fn tile_cache_sweep(store: State<'_, AppStore>) -> Result<SweepReport, String> {
+    let config = tile_cache::load_config(&store.data_dir);
+    let cache_root = tile_cache::cache_root(&store.data_dir);
+    tile_cache::sweep(&cache_root, &config)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// 通过 IPC 直接返回瓦片字节（绕过 WKWebView 自定义 scheme 在 XHR 上的兼容性问题）。
+// 前端 monkey-patch Cesium Resource.loadWithXhr 时调用，命中则走本地缓存，未命中则上游回源并落盘。
+#[tauri::command]
+async fn tile_cache_fetch(
+    store: State<'_, AppStore>,
+    path_and_query: String,
+) -> Result<tauri::ipc::Response, String> {
+    let cache_root = tile_cache::cache_root(&store.data_dir);
+    let _ = tokio::fs::create_dir_all(&cache_root).await;
+    let resp = tile_cache::serve_tile(&cache_root, &path_and_query)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(resp.bytes))
+}
+
 #[tauri::command]
 fn open_world_snapshot(
     store: State<'_, AppStore>,
@@ -329,10 +530,70 @@ fn open_world_snapshot(
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_geolocation::init())
+        .register_asynchronous_uri_scheme_protocol("tilecache", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // tilecache://g/v1/<path>?<query>
+                let uri = request.uri();
+                let path = uri.path().trim_start_matches('/');
+                let path_after = path
+                    .strip_prefix("g/v1/")
+                    .or_else(|| path.strip_prefix("v1/"))
+                    .unwrap_or(path);
+                let path_and_query = match uri.query() {
+                    Some(q) => format!("{path_after}?{q}"),
+                    None => path_after.to_string(),
+                };
+
+                let cache_root = match app.path().app_data_dir() {
+                    Ok(d) => tile_cache::cache_root(&d),
+                    Err(error) => {
+                        let body = format!("no data dir: {error}").into_bytes();
+                        responder.respond(
+                            tauri::http::Response::builder()
+                                .status(500)
+                                .body(body)
+                                .unwrap(),
+                        );
+                        return;
+                    }
+                };
+                let _ = tokio::fs::create_dir_all(&cache_root).await;
+
+                match tile_cache::serve_tile(&cache_root, &path_and_query).await {
+                    Ok(resp) => {
+                        let response = tauri::http::Response::builder()
+                            .status(200)
+                            .header("content-type", resp.content_type)
+                            .header("access-control-allow-origin", "*")
+                            .header("cache-control", "public, max-age=3600")
+                            .body(resp.bytes)
+                            .unwrap();
+                        responder.respond(response);
+                    }
+                    Err(error) => {
+                        let body = format!("upstream error: {error}").into_bytes();
+                        responder.respond(
+                            tauri::http::Response::builder()
+                                .status(502)
+                                .body(body)
+                                .unwrap(),
+                        );
+                    }
+                }
+            });
+        })
         .setup(|app| {
             let data_dir = app.path().app_data_dir().context("获取应用数据目录失败")?;
-            let store = AppStore::load(data_dir)?;
+            let store = AppStore::load(data_dir.clone())?;
             app.manage(store);
+            // 启动时异步跑一次 LRU/TTL 清理，不阻塞窗口创建。
+            tauri::async_runtime::spawn(async move {
+                let config = tile_cache::load_config(&data_dir);
+                let cache_root = tile_cache::cache_root(&data_dir);
+                let _ = tile_cache::sweep(&cache_root, &config).await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -346,7 +607,15 @@ pub fn run() {
             tick_simulation,
             save_world_snapshot,
             list_world_snapshots,
-            open_world_snapshot
+            open_world_snapshot,
+            resolve_ip_location,
+            resolve_native_location,
+            tile_cache_get_config,
+            tile_cache_set_config,
+            tile_cache_stats,
+            tile_cache_clear,
+            tile_cache_sweep,
+            tile_cache_fetch
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用失败");

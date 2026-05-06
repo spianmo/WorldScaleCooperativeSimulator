@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next';
+
 export interface AxesIndicatorProps {
   label?: string;
   position?: [number, number, number];
@@ -7,8 +9,9 @@ export interface AxesIndicatorProps {
 }
 
 export function AxesIndicator({ label = 'WGS84' }: AxesIndicatorProps) {
+  const { t } = useTranslation();
   return (
-    <span className="cesium-world-scene-coordinate" aria-label="地理坐标系">
+    <span className="cesium-world-scene-coordinate" aria-label={t('worldScene.coordSystemAria')}>
       {label}
     </span>
   );

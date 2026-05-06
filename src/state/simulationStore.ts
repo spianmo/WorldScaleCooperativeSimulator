@@ -9,6 +9,7 @@ import {
   type SimulationTask,
   type WorldSnapshot,
 } from '../types';
+import { tx } from '../i18n';
 
 export function touchStateClock(clock: SimulationClock): SimulationClock {
   return {
@@ -31,7 +32,7 @@ export function replaceWorldInState(state: SimulationState, world: WorldSnapshot
       createSimulationLogEntry({
         level: 'info',
         scope: 'world',
-        message: '世界快照已更新。',
+        message: tx('simulationStore.snapshotUpdated'),
       }),
     ),
   };
@@ -42,7 +43,8 @@ export function appendDeviceToState(state: SimulationState, device: SimulationDe
     ...device,
     updatedAt: new Date().toISOString(),
   };
-  const nextDevices = state.devices.some((item) => item.id === device.id)
+  const isUpdate = state.devices.some((item) => item.id === device.id);
+  const nextDevices = isUpdate
     ? state.devices.map((item) => (item.id === device.id ? nextDevice : item))
     : state.devices.concat(nextDevice);
 
@@ -55,7 +57,7 @@ export function appendDeviceToState(state: SimulationState, device: SimulationDe
       createSimulationLogEntry({
         level: 'info',
         scope: 'device',
-        message: `设备已${state.devices.some((item) => item.id === device.id) ? '更新' : '注册'}。`,
+        message: isUpdate ? tx('simulationStore.deviceUpdated') : tx('simulationStore.deviceRegistered'),
         details: device.id,
       }),
     ),
@@ -71,7 +73,7 @@ export function removeDeviceFromState(state: SimulationState, deviceId: string):
       createSimulationLogEntry({
         level: 'info',
         scope: 'device',
-        message: '设备已移除。',
+        message: tx('simulationStore.deviceRemoved'),
         details: deviceId,
       }),
     ),
@@ -83,7 +85,8 @@ export function appendGoalToState(state: SimulationState, goal: SimulationGoal):
     ...goal,
     updatedAt: new Date().toISOString(),
   };
-  const nextGoals = state.goals.some((item) => item.id === goal.id)
+  const isUpdate = state.goals.some((item) => item.id === goal.id);
+  const nextGoals = isUpdate
     ? state.goals.map((item) => (item.id === goal.id ? nextGoal : item))
     : state.goals.concat(nextGoal);
 
@@ -97,7 +100,7 @@ export function appendGoalToState(state: SimulationState, goal: SimulationGoal):
       createSimulationLogEntry({
         level: 'info',
         scope: 'goal',
-        message: `目标已${state.goals.some((item) => item.id === goal.id) ? '更新' : '提交'}。`,
+        message: isUpdate ? tx('simulationStore.goalUpdated') : tx('simulationStore.goalSubmitted'),
         details: goal.id,
       }),
     ),

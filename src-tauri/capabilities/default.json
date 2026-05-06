@@ -11,6 +11,11 @@
     "core:window:allow-set-focus",
     "core:window:allow-set-shadow",
     "core:window:allow-start-dragging",
-    "core:webview:allow-create-webview-window"
+    "core:webview:allow-create-webview-window",
+    "geolocation:allow-check-permissions",
+    "geolocation:allow-request-permissions",
+    "geolocation:allow-get-current-position",
+    "geolocation:allow-watch-position",
+    "geolocation:allow-clear-watch"
   ]
 }

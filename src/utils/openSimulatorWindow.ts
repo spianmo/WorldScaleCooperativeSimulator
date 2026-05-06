@@ -1,6 +1,7 @@
 import { isTauri } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 
+import { tx } from '../i18n';
 import type { SimulationWindowKind } from '../types';
 
 const ALLOWED_AUXILIARY_WINDOW_KINDS = new Set<SimulationWindowKind>([
@@ -33,8 +34,8 @@ const AUXILIARY_WINDOW_SIZE_BY_KIND: Partial<Record<SimulationWindowKind, { widt
   glasses: { width: 1440, height: 960 },
   device: { width: 1520, height: 960 },
   task: { width: 1440, height: 920 },
-  settings: { width: 1040, height: 820 },
-  create_world: { width: 1640, height: 1080 },
+  settings: { width: 1120, height: 780 },
+  create_world: { width: 1280, height: 900 },
   create_device: { width: 1120, height: 900 },
 };
 
@@ -43,8 +44,11 @@ const MIN_AUXILIARY_WINDOW_SIZE = {
   height: 720,
 };
 
-const FRAMELESS_AUXILIARY_WINDOW_KINDS = new Set<SimulationWindowKind>([
+const FRAMELESS_AUXILIARY_WINDOW_KINDS = new Set<SimulationWindowKind>();
+
+const FIXED_SIZE_AUXILIARY_WINDOW_KINDS = new Set<SimulationWindowKind>([
   'create_world',
+  'settings',
 ]);
 
 function isAllowedAuxiliaryRoute(route: string) {
@@ -105,12 +109,8 @@ function buildBrowserFeatures(options: OpenSimulatorWindowOptions) {
 
 async function applyWindowChrome(kind: SimulationWindowKind, webviewWindow: WebviewWindow) {
   const isFrameless = FRAMELESS_AUXILIARY_WINDOW_KINDS.has(kind);
-  if (!isFrameless) {
-    return;
-  }
-
   await Promise.all([
-    webviewWindow.setDecorations(false),
+    webviewWindow.setDecorations(!isFrameless),
     webviewWindow.setShadow(true),
   ]);
 }
@@ -121,7 +121,7 @@ export async function openSimulatorWindow(options: OpenSimulatorWindowOptions): 
   const size = resolveWindowSize(options);
 
   if (!ALLOWED_AUXILIARY_WINDOW_KINDS.has(options.kind) || !isAllowedAuxiliaryRoute(route)) {
-    throw new Error(`不允许打开未注册的模拟器窗口: ${options.kind} ${route}`);
+    throw new Error(tx('simulator.windowNotAllowed', { kind: options.kind, route }));
   }
 
   if (isTauri()) {
@@ -140,16 +140,19 @@ export async function openSimulatorWindow(options: OpenSimulatorWindowOptions): 
       };
     }
 
+    const isFixedSize = FIXED_SIZE_AUXILIARY_WINDOW_KINDS.has(options.kind);
     const webviewWindow = new WebviewWindow(options.label, {
       title: options.title,
       url,
       width: size.width,
       height: size.height,
-      minWidth: Math.min(size.width, MIN_AUXILIARY_WINDOW_SIZE.width),
-      minHeight: Math.min(size.height, MIN_AUXILIARY_WINDOW_SIZE.height),
-      resizable: options.resizable ?? true,
+      minWidth: isFixedSize ? size.width : Math.min(size.width, MIN_AUXILIARY_WINDOW_SIZE.width),
+      minHeight: isFixedSize ? size.height : Math.min(size.height, MIN_AUXILIARY_WINDOW_SIZE.height),
+      maxWidth: isFixedSize ? size.width : undefined,
+      maxHeight: isFixedSize ? size.height : undefined,
+      resizable: isFixedSize ? false : (options.resizable ?? true),
       decorations: !FRAMELESS_AUXILIARY_WINDOW_KINDS.has(options.kind),
-      shadow: FRAMELESS_AUXILIARY_WINDOW_KINDS.has(options.kind),
+      shadow: true,
     });
 
     await applyWindowChrome(options.kind, webviewWindow).catch(() => undefined);
