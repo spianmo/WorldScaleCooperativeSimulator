@@ -23,7 +23,8 @@ import {
 } from 'react-icons/fi';
 import { useTranslation } from 'react-i18next';
 import { useSimulation } from '../state';
-import type { GenerateWorldInput } from '../api';
+import type { GenerateWorldInput, UpdateWorldSettingsInput } from '../api';
+import type { WorldSnapshot } from '../types';
 import { getConfiguredGoogleMapsApiKey, loadGoogleMapsLibraries } from '../utils';
 import terminalLogoMarkUrl from '../../assets/design/logo.png';
 import terminalMapReferenceUrl from '../../assets/design/terminal-map-reference.png';
@@ -179,28 +180,94 @@ function buildStaticMapThumbnailUrl(mode: ViewMode, lat: number, lon: number, ap
   }
 }
 
+function detectMode(): 'create' | 'edit' {
+  if (typeof window === 'undefined') return 'create';
+  const hash = window.location.hash;
+  const queryStart = hash.indexOf('?');
+  if (queryStart < 0) return 'create';
+  const params = new URLSearchParams(hash.slice(queryStart + 1));
+  return params.get('mode') === 'edit' ? 'edit' : 'create';
+}
+
+function weatherFromSnapshot(weather: WorldSnapshot['terrain']['weather']): WeatherPreset {
+  switch (weather) {
+    case 'cloudy':
+      return 'cloudy';
+    case 'rainy':
+      return 'light_rain';
+    case 'foggy':
+      return 'foggy';
+    case 'stormy':
+      return 'heavy_rain';
+    case 'windy':
+    case 'sunny':
+    default:
+      return 'sunny';
+  }
+}
+
+function parseFloatSafe(value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export function CreateWorldWindow() {
   const { t } = useTranslation();
-  const { generateWorld, appendLog } = useSimulation();
+  const { state, generateWorld, updateWorldSettings, appendLog } = useSimulation();
+  const mode = useMemo<'create' | 'edit'>(() => detectMode(), []);
+  const isEditMode = mode === 'edit';
   const defaultStreetSpec = useMemo(() => buildDefaultStreetSpec(t), [t]);
-  const [name, setName] = useState(defaultStreetSpec.name);
-  const [description, setDescription] = useState(defaultStreetSpec.description);
-  const [searchText, setSearchText] = useState(defaultStreetSpec.searchText);
-  const [streetAddress, setStreetAddress] = useState(defaultStreetSpec.streetAddress);
-  const [district, setDistrict] = useState(defaultStreetSpec.district);
-  const [latitude, setLatitude] = useState(defaultStreetSpec.latitude);
-  const [longitude, setLongitude] = useState(defaultStreetSpec.longitude);
-  const [radiusM, setRadiusM] = useState(defaultStreetSpec.radiusM);
-  const [dataSource] = useState(defaultStreetSpec.dataSource);
-  const [previewQuality] = useState(defaultStreetSpec.previewQuality);
-  const [worldTime, setWorldTime] = useState(defaultStreetSpec.worldTime);
-  const [terrainSource, setTerrainSource] = useState(defaultStreetSpec.terrainSource);
-  const [weather, setWeather] = useState(defaultStreetSpec.weather);
+  const initialSpec = useMemo(() => {
+    if (!isEditMode) return defaultStreetSpec;
+    const meta = state.world.metadata ?? {};
+    return {
+      ...defaultStreetSpec,
+      name: state.world.name || defaultStreetSpec.name,
+      description: state.world.description || defaultStreetSpec.description,
+      searchText: meta.street_address || defaultStreetSpec.searchText,
+      streetAddress: meta.street_address || defaultStreetSpec.streetAddress,
+      district: meta.district || defaultStreetSpec.district,
+      latitude: parseFloatSafe(meta.center_lat, defaultStreetSpec.latitude),
+      longitude: parseFloatSafe(meta.center_lon, defaultStreetSpec.longitude),
+      radiusM: parseFloatSafe(meta.radius_m, defaultStreetSpec.radiusM),
+      dataSource: meta.data_source || defaultStreetSpec.dataSource,
+      worldTime: meta.world_time || defaultStreetSpec.worldTime,
+      weather: weatherFromSnapshot(state.world.terrain.weather),
+      terrainSource: (meta.terrain_source as TerrainSource) || defaultStreetSpec.terrainSource,
+    };
+    // 仅在挂载时一次性吸收当前世界（编辑窗口是独立子窗口）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditMode]);
+  const initialPhysicsSpec = useMemo(() => {
+    if (!isEditMode) return { weatherStrength: 20, timeSpeed: 1, windSpeed: 5, lightHour: 14.53 };
+    const meta = state.world.metadata ?? {};
+    return {
+      weatherStrength: Math.round(parseFloatSafe(meta.weather_strength_pct, 20)),
+      timeSpeed: parseFloatSafe(meta.time_speed, 1),
+      windSpeed: parseFloatSafe(meta.wind_speed_mps, state.world.terrain.windMps ?? 5),
+      lightHour: parseFloatSafe(meta.light_hour, 14.53),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditMode]);
+  const [name, setName] = useState(initialSpec.name);
+  const [description, setDescription] = useState(initialSpec.description);
+  const [searchText, setSearchText] = useState(initialSpec.searchText);
+  const [streetAddress, setStreetAddress] = useState(initialSpec.streetAddress);
+  const [district, setDistrict] = useState(initialSpec.district);
+  const [latitude, setLatitude] = useState(initialSpec.latitude);
+  const [longitude, setLongitude] = useState(initialSpec.longitude);
+  const [radiusM, setRadiusM] = useState(initialSpec.radiusM);
+  const [dataSource] = useState(initialSpec.dataSource);
+  const [previewQuality] = useState(initialSpec.previewQuality);
+  const [worldTime, setWorldTime] = useState(initialSpec.worldTime);
+  const [terrainSource, setTerrainSource] = useState(initialSpec.terrainSource);
+  const [weather, setWeather] = useState(initialSpec.weather);
   const [viewMode, setViewMode] = useState<ViewMode>('satellite');
-  const [weatherStrength, setWeatherStrength] = useState(20);
-  const [timeSpeed, setTimeSpeed] = useState(1);
-  const [windSpeed, setWindSpeed] = useState(5);
-  const [lightHour, setLightHour] = useState(14.53);
+  const [weatherStrength, setWeatherStrength] = useState(initialPhysicsSpec.weatherStrength);
+  const [timeSpeed, setTimeSpeed] = useState(initialPhysicsSpec.timeSpeed);
+  const [windSpeed, setWindSpeed] = useState(initialPhysicsSpec.windSpeed);
+  const [lightHour, setLightHour] = useState(initialPhysicsSpec.lightHour);
   const [status, setStatus] = useState(() => t('createWorldWindow.statusGoogleMapsLoading'));
   const [mapStatus, setMapStatus] = useState(() => googleMapsSizeLabel(t));
   const [isMapReady, setIsMapReady] = useState(false);
@@ -512,8 +579,66 @@ export function CreateWorldWindow() {
   };
 
   const submit = () => {
+    const resolvedName = name.trim() || t('createWorldWindow.defaultWorldName', { place: streetAddress || searchText });
+    setErrorDetail(null);
+
+    if (isEditMode) {
+      const editInput: UpdateWorldSettingsInput['input'] = {
+        name: resolvedName,
+        description: description.trim() || undefined,
+        street_address: streetAddress.trim() || searchText.trim() || undefined,
+        district: district.trim() || undefined,
+        center_lat: latitude,
+        center_lon: longitude,
+        radius_m: radiusM,
+        data_source: dataSource || undefined,
+        weather,
+        wind_speed_mps: windSpeed,
+        weather_strength_pct: weatherStrength,
+        light_hour: lightHour,
+        world_time: worldTime,
+        time_speed: timeSpeed,
+        terrain_source: terrainSource,
+      };
+      setStatus(t('createWorldWindow.statusUpdating'));
+      void updateWorldSettings(editInput)
+        .then(() => {
+          setStatus(t('createWorldWindow.statusUpdated', { name: resolvedName }));
+          setSubmitted(true);
+          appendLog({
+            level: 'info',
+            scope: 'world',
+            message: t('createWorldWindow.logUpdated', {
+              name: resolvedName,
+              lat: latitude.toFixed(6),
+              lon: longitude.toFixed(6),
+              radius: radiusM,
+            }),
+          });
+          closeDialog();
+        })
+        .catch((error) => {
+          const summary = error instanceof Error ? error.message : String(error);
+          const detail = error instanceof Error
+            ? error.stack && error.stack.includes(summary)
+              ? error.stack
+              : `${error.name}: ${summary}${error.stack ? `\n${error.stack}` : ''}`
+            : summary;
+          console.error('[edit-world] update world settings failed', error);
+          appendLog({
+            level: 'error',
+            scope: 'world',
+            message: t('createWorldWindow.logUpdateFailed', { message: summary }),
+            details: detail,
+          });
+          setStatus(t('createWorldWindow.statusUpdateFailed'));
+          setErrorDetail({ summary, detail });
+        });
+      return;
+    }
+
     const input: GenerateWorldInput['input'] = {
-      name: name.trim() || t('createWorldWindow.defaultWorldName', { place: streetAddress || searchText }),
+      name: resolvedName,
       seed: Date.now(),
       object_density: preview.density,
       street_address: streetAddress.trim() || searchText.trim(),
@@ -526,7 +651,6 @@ export function CreateWorldWindow() {
     };
 
     setStatus(t('createWorldWindow.statusGenerating'));
-    setErrorDetail(null);
     void generateWorld(input)
       .then(() => {
         setStatus(t('createWorldWindow.statusGenerated', { name: input.name }));
@@ -632,8 +756,12 @@ export function CreateWorldWindow() {
             </span>
           </div>
           <div className="create-world-title-block" onMouseDown={startWindowDrag}>
-            <h1 id="create-world-title">{t('createWorldWindow.headerTitle')}</h1>
-            <p>{t('createWorldWindow.headerSubtitle')}</p>
+            <h1 id="create-world-title">
+              {isEditMode ? t('createWorldWindow.editTitle') : t('createWorldWindow.headerTitle')}
+            </h1>
+            <p>
+              {isEditMode ? t('createWorldWindow.editSubtitle') : t('createWorldWindow.headerSubtitle')}
+            </p>
           </div>
           <nav className="create-world-stepper" aria-label={t('createWorldWindow.stepperAria')}>
             {stepIds.map((stepId) => (
@@ -909,7 +1037,7 @@ export function CreateWorldWindow() {
             >
               {currentStep === 3 ? <FiSave /> : null}
               {currentStep === 3
-                ? t('createWorldWindow.create')
+                ? (isEditMode ? t('createWorldWindow.update') : t('createWorldWindow.create'))
                 : t('createWorldWindow.nextStep', { name: t(stepKeyById[(currentStep + 1) as StepId]) })}
               {currentStep < 3 ? <FiArrowRight /> : null}
             </button>

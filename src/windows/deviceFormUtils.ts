@@ -112,7 +112,7 @@ export function createDevice(kind: DeviceKind, index: number, profile: DevicePhy
             : ['ground_move', 'inspect', 'transport'],
     physicalProfile: profile,
     telemetry: {
-      position: [Math.random() * 20, kind === 'drone' ? 8 : 0, Math.random() * 20],
+      position: [Math.random() * 20, kind === 'drone' ? 20 : 0, Math.random() * 20],
       velocity: [0, 0, 0],
       headingDeg: 0,
       batteryPercent,

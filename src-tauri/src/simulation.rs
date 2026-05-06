@@ -331,10 +331,9 @@ fn finalize_world_metadata(world: &mut World) {
         metadata_object
             .properties
             .insert("road_count".into(), road_count.to_string());
-        metadata_object.properties.insert(
-            "poi_count".into(),
-            ((building_count / 4).max(4)).to_string(),
-        );
+        metadata_object
+            .properties
+            .insert("poi_count".into(), "0".into());
     }
 }
 
@@ -445,11 +444,8 @@ fn overpass_element_to_feature(
         .get("natural")
         .map(|value| value == "water")
         .unwrap_or(false);
-    let has_poi = element.tags.contains_key("amenity")
-        || element.tags.contains_key("shop")
-        || element.tags.contains_key("tourism");
 
-    if !(has_highway || has_building || has_green || has_water || has_poi) {
+    if !(has_highway || has_building || has_green || has_water) {
         return None;
     }
 
@@ -479,8 +475,6 @@ fn overpass_element_to_feature(
         "OpenStreetMap 道路"
     } else if has_building {
         "OpenStreetMap 建筑"
-    } else if has_poi {
-        "OpenStreetMap 兴趣点"
     } else {
         "OpenStreetMap 图层"
     };
@@ -503,9 +497,6 @@ fn overpass_element_to_feature(
             "name"
                 | "highway"
                 | "building"
-                | "amenity"
-                | "shop"
-                | "tourism"
                 | "landuse"
                 | "leisure"
                 | "natural"
@@ -571,27 +562,14 @@ fn overpass_element_to_feature(
     );
     Some(OsmWorldFeature {
         name,
-        kind: if has_poi {
-            WorldObjectKind::Landmark
-        } else if has_water {
+        kind: if has_water {
             WorldObjectKind::Water
         } else {
             WorldObjectKind::TerrainPatch
         },
         position: Vector3::new(center_x, 0.0, center_z),
-        size: Vector3::new(
-            width.max(2.4),
-            if has_poi { 8.0 } else { 0.2 },
-            depth.max(2.4),
-        ),
-        tags: vec![
-            "osm".into(),
-            if has_poi {
-                "poi".into()
-            } else {
-                "terrain_patch".into()
-            },
-        ],
+        size: Vector3::new(width.max(2.4), 0.2, depth.max(2.4)),
+        tags: vec!["osm".into(), "terrain_patch".into()],
         walkable: !has_water,
         interactive: true,
         properties,
@@ -647,9 +625,6 @@ pub async fn fetch_osm_street_dataset(
           way["leisure"~"park|garden"](around:{radius},{lat},{lon});
           way["landuse"~"grass|park|recreation_ground"](around:{radius},{lat},{lon});
           way["natural"="water"](around:{radius},{lat},{lon});
-          node["amenity"](around:{radius},{lat},{lon});
-          node["shop"](around:{radius},{lat},{lon});
-          node["tourism"](around:{radius},{lat},{lon});
         );
         out geom 160;
         "#,
@@ -929,6 +904,175 @@ pub async fn generate_world(
     Ok(state.clone())
 }
 
+fn parse_weather(value: &str) -> Option<Climate> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "sunny" | "clear" => Some(Climate::Clear),
+        "cloudy" | "overcast" => Some(Climate::Cloudy),
+        "rainy" | "rain" | "light_rain" | "heavy_rain" => Some(Climate::Rainy),
+        "foggy" | "fog" => Some(Climate::Foggy),
+        "windy" => Some(Climate::Windy),
+        "stormy" | "storm" | "thunderstorm" => Some(Climate::Stormy),
+        _ => None,
+    }
+}
+
+pub fn update_world_settings(
+    state: &mut SimulationState,
+    input: UpdateWorldSettingsInput,
+) -> Result<SimulationState> {
+    if let Some(name) = input
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        state.world.name = name.to_string();
+    }
+    if let Some(weather) = input.weather.as_deref() {
+        if let Some(climate) = parse_weather(weather) {
+            state.world.climate = climate;
+        } else {
+            return Err(anyhow!("无法识别的天气类型：{weather}"));
+        }
+    }
+
+    let metadata_object = state.world.objects.iter_mut().find(|object| {
+        object
+            .properties
+            .get("world_metadata")
+            .map(|value| value == "true")
+            .unwrap_or(false)
+    });
+
+    let address_for_log: String;
+    let lat_for_log: f64;
+    let lon_for_log: f64;
+    let radius_for_log: f32;
+
+    if let Some(metadata_object) = metadata_object {
+        let props = &mut metadata_object.properties;
+        if let Some(addr) = input
+            .street_address
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            props.insert("street_address".into(), addr.to_string());
+            metadata_object.name = format!("{} 元数据", addr);
+        }
+        if let Some(district) = input
+            .district
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            props.insert("district".into(), district.to_string());
+        }
+        if let Some(lat) = input.center_lat {
+            props.insert("center_lat".into(), format!("{lat:.6}"));
+        }
+        if let Some(lon) = input.center_lon {
+            props.insert("center_lon".into(), format!("{lon:.6}"));
+        }
+        if let Some(radius) = input.radius_m {
+            props.insert("radius_m".into(), format!("{radius:.0}"));
+        }
+        if let Some(ds) = input
+            .data_source
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            props.insert("data_source".into(), ds.to_string());
+        }
+        if let Some(wind) = input.wind_speed_mps {
+            props.insert("wind_speed_mps".into(), format!("{wind:.2}"));
+        }
+        if let Some(strength) = input.weather_strength_pct {
+            props.insert("weather_strength_pct".into(), strength.to_string());
+        }
+        if let Some(light) = input.light_hour {
+            props.insert("light_hour".into(), format!("{light:.2}"));
+        }
+        if let Some(world_time) = input
+            .world_time
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            props.insert("world_time".into(), world_time.to_string());
+        }
+        if let Some(speed) = input.time_speed {
+            props.insert("time_speed".into(), format!("{speed:.2}"));
+        }
+        if let Some(terrain) = input
+            .terrain_source
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            props.insert("terrain_source".into(), terrain.to_string());
+        }
+        if let Some(desc) = input.description.as_deref() {
+            props.insert("description".into(), desc.to_string());
+        }
+        props.insert("updated_at".into(), now().to_rfc3339());
+        address_for_log = props.get("street_address").cloned().unwrap_or_default();
+        lat_for_log = props
+            .get("center_lat")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        lon_for_log = props
+            .get("center_lon")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        radius_for_log = props
+            .get("radius_m")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+    } else {
+        let addr = input
+            .street_address
+            .clone()
+            .unwrap_or_else(|| "未命名街区".to_string());
+        let district = input.district.clone().unwrap_or_default();
+        let lat = input.center_lat.unwrap_or(0.0);
+        let lon = input.center_lon.unwrap_or(0.0);
+        let radius = input.radius_m.unwrap_or(500.0);
+        let ds = input
+            .data_source
+            .clone()
+            .unwrap_or_else(|| "OpenStreetMap".to_string());
+        add_world_metadata_object(
+            &mut state.world,
+            &addr,
+            &district,
+            lat,
+            lon,
+            radius,
+            &ds,
+            "online_osm_required",
+        );
+        address_for_log = addr;
+        lat_for_log = lat;
+        lon_for_log = lon;
+        radius_for_log = radius;
+    }
+
+    state.world.updated_at = now();
+    push_log(
+        state,
+        LogLevel::Info,
+        "world",
+        format!(
+            "已更新世界设置：{} 中心 {:.6},{:.6} 半径 {:.0}m",
+            address_for_log, lat_for_log, lon_for_log, radius_for_log
+        ),
+        Some(state.world.id),
+    );
+    Ok(state.clone())
+}
+
 pub fn register_device(
     state: &mut SimulationState,
     input: RegisterDeviceInput,
@@ -975,6 +1119,56 @@ pub fn register_device(
         "device",
         format!("已注册设备 {}", device.name),
         Some(device.id),
+    );
+    Ok(state.clone())
+}
+
+pub fn update_device(
+    state: &mut SimulationState,
+    input: UpdateDeviceInput,
+) -> Result<SimulationState> {
+    let device = state
+        .world
+        .devices
+        .iter_mut()
+        .find(|device| device.id == input.device_id)
+        .ok_or_else(|| anyhow!("未找到设备 {}", input.device_id))?;
+
+    if let Some(name) = input.name {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            device.name = trimmed.to_string();
+        }
+    }
+    if let Some(kind) = input.kind {
+        device.kind = kind;
+    }
+    if let Some(capacity) = input.battery_capacity {
+        device.battery_capacity = capacity.max(1.0);
+    }
+    if let Some(battery) = input.battery {
+        device.battery = sanitize_battery(battery, device.battery_capacity);
+    }
+    if let Some(position) = input.position {
+        device.position = position;
+    }
+    if let Some(profile) = input.physical_profile {
+        device.physical_profile = profile;
+    }
+    if let Some(capabilities) = input.capabilities {
+        device.capabilities = capabilities;
+    }
+    device.updated_at = now();
+
+    let device_id = device.id;
+    let device_name = device.name.clone();
+    state.world.updated_at = now();
+    push_log(
+        state,
+        LogLevel::Info,
+        "device",
+        format!("已更新设备 {}", device_name),
+        Some(device_id),
     );
     Ok(state.clone())
 }

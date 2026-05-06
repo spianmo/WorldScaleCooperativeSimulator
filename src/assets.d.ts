@@ -87,6 +87,10 @@ declare module '@cesium/engine/Source/Core/Resource.js' {
   export { Resource as default } from '@cesium/engine';
 }
 
+declare module '@cesium/engine/Source/Core/JulianDate.js' {
+  export { JulianDate as default } from '@cesium/engine';
+}
+
 declare module '@cesium/engine/Source/Core/RequestScheduler.js' {
   export { RequestScheduler as default } from '@cesium/engine';
 }
@@ -191,6 +195,10 @@ declare module '@cesium/engine/Source/DataSources/CallbackProperty.js' {
 
 declare module '@cesium/engine/Source/DataSources/CallbackPositionProperty.js' {
   export { CallbackPositionProperty as default } from '@cesium/engine';
+}
+
+declare module '@cesium/engine/Source/DataSources/ModelGraphics.js' {
+  export { ModelGraphics as default } from '@cesium/engine';
 }
 
 declare module '@cesium/engine/Source/Core/Quaternion.js' {

@@ -10,6 +10,7 @@ import type { DeviceKind } from '../types';
 import djiMavicUrl from '../../assets/models/DJI_Mavic.glb';
 import parrotBebopUrl from '../../assets/models/Parrot_Bebop.glb';
 import { g1, go2, meshBasename, type UnitreeModel } from '../assets/unitreeMeshUrls';
+import { buildWheeledRobot } from '../utils/wheeledRobotMesh';
 
 type LoaderKind = 'gltf' | 'urdf' | 'procedural_wheel';
 
@@ -265,53 +266,3 @@ export function DeviceModelPreview({ kind, className }: DeviceModelPreviewProps)
   );
 }
 
-function buildWheeledRobot(): THREE.Group {
-  const group = new THREE.Group();
-
-  const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: 0xc8d2e0,
-    metalness: 0.3,
-    roughness: 0.45,
-  });
-  const accentMaterial = new THREE.MeshStandardMaterial({
-    color: 0x1d63e9,
-    metalness: 0.1,
-    roughness: 0.4,
-  });
-  const wheelMaterial = new THREE.MeshStandardMaterial({
-    color: 0x2a2d33,
-    metalness: 0.5,
-    roughness: 0.4,
-  });
-
-  const chassis = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.32, 0.6), bodyMaterial);
-  chassis.position.y = 0.32;
-  group.add(chassis);
-
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.28, 0.5), bodyMaterial);
-  cabin.position.set(0.05, 0.62, 0);
-  group.add(cabin);
-
-  const sensor = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.16, 16), accentMaterial);
-  sensor.position.set(0.18, 0.84, 0);
-  group.add(sensor);
-
-  const sensorTop = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 12), accentMaterial);
-  sensorTop.position.set(0.18, 0.94, 0);
-  group.add(sensorTop);
-
-  const wheelOffsets: Array<[number, number]> = [
-    [-0.4, -0.32],
-    [-0.4, 0.32],
-    [0.4, -0.32],
-    [0.4, 0.32],
-  ];
-  for (const [x, z] of wheelOffsets) {
-    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.1, 24), wheelMaterial);
-    wheel.rotation.z = Math.PI / 2;
-    wheel.position.set(x, 0.16, z);
-    group.add(wheel);
-  }
-
-  return group;
-}

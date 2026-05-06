@@ -248,6 +248,9 @@ export interface WorldSnapshotRecord {
   snapshotName: string;
   path: string;
   modifiedAt: string;
+  worldName?: string;
+  worldCreatedAt?: string;
+  worldUpdatedAt?: string;
 }
 
 export interface SimulationStateEnvelope {

@@ -52,7 +52,15 @@ const FIXED_SIZE_AUXILIARY_WINDOW_KINDS = new Set<SimulationWindowKind>([
 ]);
 
 function isAllowedAuxiliaryRoute(route: string) {
-  return ALLOWED_AUXILIARY_ROUTES.has(route) || route.startsWith('#/device/') || route.startsWith('#/task/');
+  // 允许在已授权路由后追加 ?... query string（用于 mode=edit 等子模式切换）。
+  const queryIndex = route.indexOf('?');
+  const basePath = queryIndex >= 0 ? route.slice(0, queryIndex) : route;
+  return (
+    ALLOWED_AUXILIARY_ROUTES.has(basePath)
+    || basePath.startsWith('#/device/')
+    || basePath.startsWith('#/task/')
+    || basePath.startsWith('#/edit-device/')
+  );
 }
 
 export interface OpenSimulatorWindowOptions {

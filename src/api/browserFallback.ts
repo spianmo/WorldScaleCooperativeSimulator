@@ -250,9 +250,8 @@ function overpassElementToWorldObject(element: BrowserOverpassElement, centerLat
   const hasBuilding = Boolean(tags.building);
   const hasGreen = Boolean(tags.leisure) || tags.landuse === 'grass' || tags.landuse === 'park';
   const hasWater = tags.natural === 'water';
-  const hasPoi = Boolean(tags.amenity) || Boolean(tags.shop) || Boolean(tags.tourism);
 
-  if (!hasHighway && !hasBuilding && !hasGreen && !hasWater && !hasPoi) {
+  if (!hasHighway && !hasBuilding && !hasGreen && !hasWater) {
     return undefined;
   }
 
@@ -279,9 +278,7 @@ function overpassElementToWorldObject(element: BrowserOverpassElement, centerLat
     ? tx('browserFallback.roadsName')
     : hasBuilding
       ? tx('browserFallback.buildingsName')
-      : hasPoi
-        ? tx('browserFallback.poiName')
-        : tx('browserFallback.layerName');
+      : tx('browserFallback.layerName');
   const name = tags.name ?? `${fallbackName} ${element.id}`;
   const properties: Record<string, string> = {
     source: 'openstreetmap',
@@ -292,7 +289,7 @@ function overpassElementToWorldObject(element: BrowserOverpassElement, centerLat
     lon: centerPoint.lon.toFixed(6),
   };
 
-  for (const key of ['name', 'highway', 'building', 'amenity', 'shop', 'tourism', 'landuse', 'leisure', 'natural', 'height', 'building:levels']) {
+  for (const key of ['name', 'highway', 'building', 'landuse', 'leisure', 'natural', 'height', 'building:levels']) {
     const value = tags[key];
     if (value) {
       properties[`osm_tag_${key}`] = value;
@@ -344,15 +341,15 @@ function overpassElementToWorldObject(element: BrowserOverpassElement, centerLat
 
   properties.material = hasWater ? 'water' : 'grass';
   return {
-    id: randomId(hasPoi ? 'osm-poi' : 'osm-terrain'),
-    kind: hasPoi ? 'landmark' : hasWater ? 'water' : 'terrain_patch',
+    id: randomId('osm-terrain'),
+    kind: hasWater ? 'water' : 'terrain_patch',
     name,
-    description: hasPoi ? tx('browserFallback.poiDescription') : tx('browserFallback.layerDescription'),
+    description: tx('browserFallback.layerDescription'),
     position: [centerX, 0, centerZ],
     rotation: [0, 0, 0],
-    scale: [Math.max(2.4, width), hasPoi ? 8 : 0.2, Math.max(2.4, depth)],
+    scale: [Math.max(2.4, width), 0.2, Math.max(2.4, depth)],
     materialId: hasWater ? 'mat-water' : 'mat-grass',
-    tags: ['osm', hasPoi ? 'poi' : 'terrain_patch'],
+    tags: ['osm', 'terrain_patch'],
     properties,
   };
 }
@@ -394,9 +391,6 @@ async function fetchOsmWorldObjects(streetAddress: string, centerLatInput: numbe
       way["leisure"~"park|garden"](around:${Math.round(radiusM)},${centerLat},${centerLon});
       way["landuse"~"grass|park|recreation_ground"](around:${Math.round(radiusM)},${centerLat},${centerLon});
       way["natural"="water"](around:${Math.round(radiusM)},${centerLat},${centerLon});
-      node["amenity"](around:${Math.round(radiusM)},${centerLat},${centerLon});
-      node["shop"](around:${Math.round(radiusM)},${centerLat},${centerLon});
-      node["tourism"](around:${Math.round(radiusM)},${centerLat},${centerLon});
     );
     out geom 160;
   `;
@@ -432,7 +426,7 @@ async function fetchOsmWorldObjects(streetAddress: string, centerLatInput: numbe
     objects,
     roadCount,
     buildingCount,
-    poiCount: objects.filter((object) => object.tags.includes('poi')).length,
+    poiCount: 0,
   };
 }
 
@@ -802,6 +796,97 @@ function registerDefaultHandlers() {
       return cloneState(nextState);
     });
   });
+  browserHandlers.set('update_world_settings', (args) => {
+    const currentState = readStoredState();
+    const input = (args && typeof args === 'object' && (args as { input?: unknown }).input) as
+      | {
+          name?: string;
+          description?: string;
+          street_address?: string;
+          district?: string;
+          center_lat?: number;
+          center_lon?: number;
+          radius_m?: number;
+          data_source?: string;
+          weather?: string;
+          wind_speed_mps?: number;
+          weather_strength_pct?: number;
+          light_hour?: number;
+          world_time?: string;
+          time_speed?: number;
+          terrain_source?: string;
+        }
+      | undefined;
+    if (!input) {
+      return cloneState(currentState);
+    }
+    const metadata = { ...(currentState.world.metadata ?? {}) };
+    const writeIfDefined = (key: string, value: string | undefined) => {
+      if (value !== undefined && value.length > 0) {
+        metadata[key] = value;
+      }
+    };
+    writeIfDefined('street_address', input.street_address?.trim());
+    writeIfDefined('district', input.district?.trim());
+    writeIfDefined('data_source', input.data_source?.trim());
+    writeIfDefined('description', input.description);
+    writeIfDefined('world_time', input.world_time?.trim());
+    writeIfDefined('terrain_source', input.terrain_source?.trim());
+    if (input.center_lat !== undefined) metadata.center_lat = input.center_lat.toFixed(6);
+    if (input.center_lon !== undefined) metadata.center_lon = input.center_lon.toFixed(6);
+    if (input.radius_m !== undefined) metadata.radius_m = input.radius_m.toFixed(0);
+    if (input.wind_speed_mps !== undefined) metadata.wind_speed_mps = input.wind_speed_mps.toFixed(2);
+    if (input.weather_strength_pct !== undefined) metadata.weather_strength_pct = String(input.weather_strength_pct);
+    if (input.light_hour !== undefined) metadata.light_hour = input.light_hour.toFixed(2);
+    if (input.time_speed !== undefined) metadata.time_speed = input.time_speed.toFixed(2);
+    metadata.updated_at = new Date().toISOString();
+
+    const nextWeather = input.weather && input.weather.trim() ? input.weather.trim() : undefined;
+    const mappedWeather: WorldSnapshot['terrain']['weather'] = nextWeather === 'sunny' || nextWeather === 'clear'
+      ? 'sunny'
+      : nextWeather === 'overcast'
+        ? 'cloudy'
+        : nextWeather === 'light_rain' || nextWeather === 'heavy_rain' || nextWeather === 'rainy'
+          ? 'rainy'
+          : nextWeather === 'foggy'
+            ? 'foggy'
+            : nextWeather === 'windy'
+              ? 'windy'
+              : nextWeather === 'stormy'
+                ? 'stormy'
+                : currentState.world.terrain.weather;
+
+    const physics = weatherPhysics(mappedWeather);
+    const overrideWind = input.wind_speed_mps !== undefined ? input.wind_speed_mps : physics.windMps;
+
+    const nextState = {
+      ...currentState,
+      world: {
+        ...currentState.world,
+        name: input.name?.trim() || currentState.world.name,
+        metadata,
+        terrain: {
+          ...currentState.world.terrain,
+          weather: mappedWeather,
+          ...physics,
+          windMps: overrideWind,
+        },
+        updatedAt: new Date().toISOString(),
+      },
+      logs: currentState.logs.concat(
+        createSimulationLogEntry({
+          level: 'info',
+          scope: 'world',
+          message: tx('browserFallback.log.worldSettingsUpdated', {
+            name: input.name?.trim() || currentState.world.name,
+          }),
+        }),
+      ),
+      clock: touchStateClock(currentState.clock),
+    };
+    writeStoredState(nextState);
+    return cloneState(nextState);
+  });
   browserHandlers.set('register_device', (args) => {
     const currentState = readStoredState();
     const nextState = appendDeviceToState(currentState, createDeviceFromArgs(args));
@@ -817,6 +902,35 @@ function registerDefaultHandlers() {
           clock: touchStateClock(currentState.clock),
         }
       : currentState;
+    writeStoredState(nextState);
+    return cloneState(nextState);
+  });
+  browserHandlers.set('update_device', (args) => {
+    const currentState = readStoredState();
+    const targetId =
+      args && typeof args === 'object' && args.input && typeof args.input === 'object'
+        ? ((args.input as { device_id?: string }).device_id ?? '')
+        : '';
+    const existing = currentState.devices.find((device) => device.id === targetId);
+    if (!existing) {
+      throw new Error(tx('browserFallback.error.missingDeviceId'));
+    }
+    const draft = createDeviceFromArgs(args);
+    const merged: SimulationDevice = {
+      ...existing,
+      kind: draft.kind,
+      name: draft.name,
+      capabilityTags: draft.capabilityTags,
+      physicalProfile: draft.physicalProfile,
+      telemetry: {
+        ...existing.telemetry,
+        position: draft.telemetry.position,
+        batteryPercent: draft.telemetry.batteryPercent,
+        powerW: draft.telemetry.powerW,
+        jointAnglesDeg: draft.telemetry.jointAnglesDeg,
+      },
+    };
+    const nextState = appendDeviceToState(currentState, merged);
     writeStoredState(nextState);
     return cloneState(nextState);
   });
@@ -1014,6 +1128,9 @@ function registerDefaultHandlers() {
       snapshotName,
       path: `localStorage://${SNAPSHOT_KEY}/${snapshotName}.toml`,
       modifiedAt: state.world.updatedAt,
+      worldName: state.world.name,
+      worldCreatedAt: state.world.createdAt,
+      worldUpdatedAt: state.world.updatedAt,
     }));
     return records.sort((left, right) => right.modifiedAt.localeCompare(left.modifiedAt));
   });
@@ -1028,6 +1145,27 @@ function registerDefaultHandlers() {
     }
     writeStoredState(snapshot);
     return cloneState(snapshot);
+  });
+  browserHandlers.set('delete_world_snapshot', (args) => {
+    const input = args && typeof args === 'object' && args.input && typeof args.input === 'object'
+      ? args.input as { snapshot_name?: string }
+      : {};
+    const snapshotName = sanitizeSnapshotName(input.snapshot_name ?? '');
+    const snapshots = readStoredSnapshots();
+    if (!snapshots[snapshotName]) {
+      throw new Error(tx('browserFallback.error.snapshotNotFound', { name: snapshotName }));
+    }
+    const { [snapshotName]: _removed, ...rest } = snapshots;
+    writeStoredSnapshots(rest);
+    const records: WorldSnapshotRecord[] = Object.entries(rest).map(([name, state]) => ({
+      snapshotName: name,
+      path: `localStorage://${SNAPSHOT_KEY}/${name}.toml`,
+      modifiedAt: state.world.updatedAt,
+      worldName: state.world.name,
+      worldCreatedAt: state.world.createdAt,
+      worldUpdatedAt: state.world.updatedAt,
+    }));
+    return records.sort((left, right) => right.modifiedAt.localeCompare(left.modifiedAt));
   });
 
   browserHandlers.set('resolve_native_location', async () => {

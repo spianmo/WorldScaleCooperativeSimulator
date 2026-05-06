@@ -11,7 +11,13 @@ import { TaskWindow } from './windows/TaskWindow';
 import { WorldWindow } from './windows/WorldWindow';
 
 function resolveRoute() {
-  const hash = window.location.hash.replace(/^#\/?/, '');
+  let hash = window.location.hash.replace(/^#\/?/, '');
+  // 剥离 query string（如 ?mode=edit），避免被 split('/') 当成 name 的一部分；
+  // 子组件仍可读 window.location.hash 自行解析 query。
+  const queryIdx = hash.indexOf('?');
+  if (queryIdx >= 0) {
+    hash = hash.slice(0, queryIdx);
+  }
   const [name, id] = hash.split('/');
   return {
     name: name || 'world',
@@ -46,6 +52,10 @@ function RoutedWindow() {
 
   if (route.name === 'create-device') {
     return <CreateDeviceWindow />;
+  }
+
+  if (route.name === 'edit-device') {
+    return <CreateDeviceWindow editingDeviceId={route.id ?? ''} />;
   }
 
   if (route.name === 'control') {

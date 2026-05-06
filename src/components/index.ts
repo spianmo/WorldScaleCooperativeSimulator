@@ -1,3 +1,4 @@
+export * from './BatteryIcon';
 export * from './IconButton';
 export * from './TelemetryChart';
 export * from './TerminalLog';

@@ -68,6 +68,12 @@ export interface CameraPose {
   height: number;
 }
 
+export interface WorldSceneCameraController {
+  beginOrbit: () => boolean;
+  setOrbit: (headingDeg: number, pitchDeg: number) => void;
+  endOrbit: () => void;
+}
+
 export const MARKER_COLORS: Record<MarkerKind, string> = {
   task: '#1a73e8',
   observation: '#34a853',

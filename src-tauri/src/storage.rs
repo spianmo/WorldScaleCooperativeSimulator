@@ -1,5 +1,6 @@
 use crate::models::{LlmSettings, MapProviderSettings, SimulationState, World, WorldSnapshotRecord};
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -152,8 +153,15 @@ pub fn ensure_world_snapshot_dir(base_dir: &Path) -> Result<PathBuf> {
 
 pub fn save_world_snapshot_to_path(path: &Path, state: &SimulationState) -> Result<()> {
     ensure_parent_dir(path)?;
-    let snapshot = toml::to_string_pretty(&state.world).context("序列化世界快照失败")?;
-    fs::write(path, snapshot).with_context(|| format!("写入世界快照失败: {}", path.display()))?;
+    // 用一份 redact 后的 SimulationState 作为快照载体，确保设备/任务/目标/日志/物理规则
+    // 与运行时设置一并落盘；同时保留对仅含 World 的旧版快照文件的读取兼容。
+    let mut persisted = state.clone();
+    persisted.settings.llm.api_key = None;
+    persisted.settings.maps.google_maps.api_key = None;
+    persisted.settings.maps.cesium_ion.token = None;
+
+    let content = toml::to_string_pretty(&persisted).context("序列化世界快照失败")?;
+    fs::write(path, content).with_context(|| format!("写入世界快照失败: {}", path.display()))?;
     Ok(())
 }
 
@@ -177,18 +185,35 @@ pub fn list_world_snapshots(base_dir: &Path) -> Result<Vec<WorldSnapshotRecord>>
             .modified()
             .ok()
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_secs().to_string())
-            .unwrap_or_else(|| "0".to_string());
+            .map(|duration| {
+                let secs = duration.as_secs() as i64;
+                let nanos = duration.subsec_nanos();
+                DateTime::<Utc>::from_timestamp(secs, nanos)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_else(|| secs.to_string())
+            })
+            .unwrap_or_default();
         let snapshot_name = path
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or("unknown")
             .to_string();
 
+        let world_meta = load_world_snapshot_from_path(&path).ok().map(|snapshot| match snapshot {
+            LoadedWorldSnapshot::Full(state) => state.world,
+            LoadedWorldSnapshot::WorldOnly(world) => world,
+        });
+        let world_name = world_meta.as_ref().map(|world| world.name.clone());
+        let world_created_at = world_meta.as_ref().map(|world| world.created_at.to_rfc3339());
+        let world_updated_at = world_meta.as_ref().map(|world| world.updated_at.to_rfc3339());
+
         records.push(WorldSnapshotRecord {
             snapshot_name,
             path: path.display().to_string(),
             modified_at,
+            world_name,
+            world_created_at,
+            world_updated_at,
         });
     }
 
@@ -196,12 +221,42 @@ pub fn list_world_snapshots(base_dir: &Path) -> Result<Vec<WorldSnapshotRecord>>
     Ok(records)
 }
 
-pub fn load_world_snapshot_from_path(path: &Path) -> Result<World> {
+pub enum LoadedWorldSnapshot {
+    Full(SimulationState),
+    WorldOnly(World),
+}
+
+pub fn load_world_snapshot_from_path(path: &Path) -> Result<LoadedWorldSnapshot> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("读取世界快照失败: {}", path.display()))?;
-    let world = toml::from_str(&content)
+    // 新版快照是完整 SimulationState；解析失败时回退到旧版仅含 World 的格式。
+    if let Ok(state) = toml::from_str::<SimulationState>(&content) {
+        return Ok(LoadedWorldSnapshot::Full(state));
+    }
+    let world = toml::from_str::<World>(&content)
         .with_context(|| format!("解析世界快照 TOML 失败: {}", path.display()))?;
-    Ok(world)
+    Ok(LoadedWorldSnapshot::WorldOnly(world))
+}
+
+pub fn delete_world_snapshot(base_dir: &Path, snapshot_name: &str) -> Result<()> {
+    let snapshot_dir = ensure_world_snapshot_dir(base_dir)?;
+    let safe_name: String = snapshot_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let path = snapshot_dir.join(format!("{safe_name}.toml"));
+    if !path.exists() {
+        anyhow::bail!("世界快照不存在: {}", path.display());
+    }
+    fs::remove_file(&path)
+        .with_context(|| format!("删除世界快照失败: {}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]

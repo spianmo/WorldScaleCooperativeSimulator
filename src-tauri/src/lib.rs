@@ -13,7 +13,7 @@ use llm::{LlmIntentRequest, LlmStreamLog, LlmStreamLogLevel};
 use models::{
     Device, GenerateWorldInput, LogEntry, LogLevel, OpenWorldSnapshotInput, RegisterDeviceInput,
     SaveSnapshotInput, SavedPath, SettingsPatch, SimulationState, SubmitGoalInput, TickInput,
-    WorldSnapshotRecord,
+    UpdateDeviceInput, UpdateWorldSettingsInput, WorldSnapshotRecord,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -185,6 +185,16 @@ async fn generate_world(
 }
 
 #[tauri::command]
+fn update_world_settings(
+    store: State<'_, AppStore>,
+    input: UpdateWorldSettingsInput,
+) -> Result<SimulationState, String> {
+    with_state(&store, |state| {
+        simulation::update_world_settings(state, input)
+    })
+}
+
+#[tauri::command]
 fn register_device(
     store: State<'_, AppStore>,
     input: RegisterDeviceInput,
@@ -195,6 +205,14 @@ fn register_device(
 #[tauri::command]
 fn remove_device(store: State<'_, AppStore>, device_id: Uuid) -> Result<SimulationState, String> {
     with_state(&store, |state| simulation::remove_device(state, device_id))
+}
+
+#[tauri::command]
+fn update_device(
+    store: State<'_, AppStore>,
+    input: UpdateDeviceInput,
+) -> Result<SimulationState, String> {
+    with_state(&store, |state| simulation::update_device(state, input))
 }
 
 #[tauri::command]
@@ -304,6 +322,16 @@ fn save_world_snapshot(
 
 #[tauri::command]
 fn list_world_snapshots(store: State<'_, AppStore>) -> Result<Vec<WorldSnapshotRecord>, String> {
+    storage::list_world_snapshots(&store.data_dir).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn delete_world_snapshot(
+    store: State<'_, AppStore>,
+    input: OpenWorldSnapshotInput,
+) -> Result<Vec<WorldSnapshotRecord>, String> {
+    storage::delete_world_snapshot(&store.data_dir, &input.snapshot_name)
+        .map_err(|error| error.to_string())?;
     storage::list_world_snapshots(&store.data_dir).map_err(|error| error.to_string())
 }
 
@@ -537,8 +565,21 @@ fn open_world_snapshot(
             })
             .collect::<String>();
         let path = snapshot_dir.join(format!("{safe_name}.toml"));
-        let world = storage::load_world_snapshot_from_path(&path)?;
-        state.world = world;
+        match storage::load_world_snapshot_from_path(&path)? {
+            storage::LoadedWorldSnapshot::Full(snapshot_state) => {
+                // 保留运行时凭据（API key/token），其它（settings/world）按 snapshot 整体恢复。
+                let preserved_llm_key = state.settings.llm.api_key.clone();
+                let preserved_google_key = state.settings.maps.google_maps.api_key.clone();
+                let preserved_cesium_token = state.settings.maps.cesium_ion.token.clone();
+                *state = snapshot_state;
+                state.settings.llm.api_key = preserved_llm_key;
+                state.settings.maps.google_maps.api_key = preserved_google_key;
+                state.settings.maps.cesium_ion.token = preserved_cesium_token;
+            }
+            storage::LoadedWorldSnapshot::WorldOnly(world) => {
+                state.world = world;
+            }
+        }
         Ok(state.clone())
     })
 }
@@ -620,13 +661,16 @@ pub fn run() {
             save_state,
             update_settings,
             generate_world,
+            update_world_settings,
             register_device,
             remove_device,
+            update_device,
             submit_goal,
             tick_simulation,
             save_world_snapshot,
             list_world_snapshots,
             open_world_snapshot,
+            delete_world_snapshot,
             resolve_ip_location,
             resolve_native_location,
             tile_cache_get_config,

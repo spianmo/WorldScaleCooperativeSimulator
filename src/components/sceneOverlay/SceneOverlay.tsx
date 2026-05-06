@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { Compass } from './Compass';
 import { CoordinateAxes } from './CoordinateAxes';
 import { SceneEditToolbar } from './SceneEditToolbar';
 import { SceneRail, type RailPanelId } from './SceneRail';
 import { SceneSettingsPanel } from './SceneSettingsPanel';
+import type { WorldSceneCameraController } from './sceneTypes';
 import type { UseSceneToolsReturn } from './useSceneTools';
 import type { SimulationDevice, SimulationGoal, SimulationTask, WorldObject } from '../../types';
 
@@ -18,6 +19,7 @@ export interface SceneOverlayProps {
   onResetNorth: () => void;
   onFocusDevice: (deviceId: string) => void;
   onFocusObject: (objectId: string) => void;
+  cameraControllerRef?: MutableRefObject<WorldSceneCameraController | null>;
 }
 
 export function SceneOverlay({
@@ -31,6 +33,7 @@ export function SceneOverlay({
   onResetNorth,
   onFocusDevice,
   onFocusObject,
+  cameraControllerRef,
 }: SceneOverlayProps) {
   const [activePanel, setActivePanel] = useState<RailPanelId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -87,7 +90,11 @@ export function SceneOverlay({
 
       {tools.settings.showAxes ? (
         <div className="scene-overlay-bottom-right">
-          <CoordinateAxes headingDeg={cameraHeadingDeg} pitchDeg={cameraPitchDeg} />
+          <CoordinateAxes
+            headingDeg={cameraHeadingDeg}
+            pitchDeg={cameraPitchDeg}
+            controllerRef={cameraControllerRef}
+          />
         </div>
       ) : null}
 

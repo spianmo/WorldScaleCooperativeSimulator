@@ -30,6 +30,7 @@ import type { DeviceKind, SimulationDevice, TaskKind } from '../types';
 import { createDevice, defaultProfile, getDeviceKindLabel } from './deviceFormUtils';
 import { getConfiguredGoogleMapsApiKey, loadGoogleMapsLibraries } from '../utils';
 import { DeviceModelPreview } from '../components/DeviceModelPreview';
+import { resolveWorldCenter } from '../components/WorldScene';
 import terminalLogoMarkUrl from '../../assets/design/logo.png';
 import terminalMapReferenceUrl from '../../assets/design/terminal-map-reference.png';
 import thumbDjiMavicUrl from '../../assets/design/device-thumb-dji-mavic-3e.png';
@@ -173,9 +174,17 @@ const baseCapabilityCatalog = [
   'zoom',
 ];
 
-export function CreateDeviceWindow() {
+export interface CreateDeviceWindowProps {
+  editingDeviceId?: string;
+}
+
+export function CreateDeviceWindow({ editingDeviceId }: CreateDeviceWindowProps = {}) {
   const { t } = useTranslation();
-  const { state, registerDevice, appendLog } = useSimulation();
+  const { state, registerDevice, updateDevice, appendLog } = useSimulation();
+  const editingDevice = editingDeviceId
+    ? state.devices.find((device) => device.id === editingDeviceId)
+    : undefined;
+  const isEditMode = Boolean(editingDevice);
 
   const [currentStep, setCurrentStep] = useState<StepId>(1);
   const [selectedKind, setSelectedKind] = useState<DeviceKind>('drone');
@@ -192,8 +201,14 @@ export function CreateDeviceWindow() {
   const [capabilityTags, setCapabilityTags] = useState<string[]>(deviceKindMetas.drone.defaultCapabilityTags);
   const [customTagInput, setCustomTagInput] = useState('');
   const [positionMode, setPositionMode] = useState<PositionMode>('recommended');
-  const [latitude, setLatitude] = useState(DEFAULT_LATITUDE);
-  const [longitude, setLongitude] = useState(DEFAULT_LONGITUDE);
+  const [latitude, setLatitude] = useState(() => {
+    const worldMeta = state.world.metadata ?? {};
+    return Number(worldMeta.center_lat) || DEFAULT_LATITUDE;
+  });
+  const [longitude, setLongitude] = useState(() => {
+    const worldMeta = state.world.metadata ?? {};
+    return Number(worldMeta.center_lon) || DEFAULT_LONGITUDE;
+  });
   const [altitudeM, setAltitudeM] = useState(120);
   const [status, setStatus] = useState<string>(t('createDeviceWindow.statusWaiting'));
   const [submitted, setSubmitted] = useState(false);
@@ -207,6 +222,42 @@ export function CreateDeviceWindow() {
   );
 
   const meta = deviceKindMetas[selectedKind];
+
+  const editingInitializedRef = useRef(false);
+  useEffect(() => {
+    if (!editingDevice || editingInitializedRef.current) {
+      return;
+    }
+    editingInitializedRef.current = true;
+
+    const profile = editingDevice.physicalProfile;
+    const metaForKind = deviceKindMetas[editingDevice.kind];
+    setSelectedKind(editingDevice.kind);
+    setDeviceName(editingDevice.name);
+    setBatteryPercent(Math.round(editingDevice.telemetry.batteryPercent));
+    setNominalPowerW(profile.nominalPowerW);
+    setWorkingPowerW(profile.workingPowerW);
+    setMaxSpeedMps(profile.maxSpeedMps);
+    setMaxAltitudeM(profile.maxWorkAltitudeM);
+    setMinAngleDeg(metaForKind.defaultMinAngleDeg);
+    setMaxAngleDeg(profile.maxSlopeDeg);
+    setMaxLoadKg(metaForKind.defaultLoadKg);
+    setSupportedTasks(metaForKind.defaultTaskKinds);
+    setCapabilityTags(editingDevice.capabilityTags.slice());
+
+    const center = resolveWorldCenter(state.world.objects, state.world.metadata);
+    const metersPerLat = 111_320;
+    const metersPerLon = Math.max(0.2, Math.abs(Math.cos((center.lat * Math.PI) / 180))) * 111_320;
+    const halfWorldX = 60;
+    const halfWorldZ = 60;
+    const [px, py, pz] = editingDevice.telemetry.position;
+    const eastM = px - halfWorldX;
+    const northM = halfWorldZ - pz;
+    setLongitude(Number((center.lon + eastM / metersPerLon).toFixed(6)));
+    setLatitude(Number((center.lat + northM / metersPerLat).toFixed(6)));
+    setAltitudeM(Number(py.toFixed(2)));
+    setPositionMode('custom');
+  }, [editingDevice, state.world.objects, state.world.metadata]);
 
   const applyKindDefaults = (kind: DeviceKind) => {
     const profile = defaultProfile(kind, state.physicalRules);
@@ -648,24 +699,63 @@ export function CreateDeviceWindow() {
     };
 
     const draft: SimulationDevice = createDevice(selectedKind, totalRegistered + 1, profile, batteryPercent);
-    const enriched: SimulationDevice = {
-      ...draft,
-      name: finalDeviceName,
-      capabilityTags: capabilityTags.slice(),
-      telemetry: {
-        ...draft.telemetry,
-        position: [Number(longitude.toFixed(6)), altitudeM, Number(latitude.toFixed(6))],
-      },
-    };
+    const center = resolveWorldCenter(state.world.objects, state.world.metadata);
+    const metersPerLat = 111_320;
+    const metersPerLon = Math.max(0.2, Math.abs(Math.cos((center.lat * Math.PI) / 180))) * 111_320;
+    const eastM = (longitude - center.lon) * metersPerLon;
+    const northM = (latitude - center.lat) * metersPerLat;
+    // 世界中心位于 (world.size.x / 2, _, world.size.z / 2)，默认 world.size = (120, 80, 120)；
+    // 与 WorldScene mapDeviceTelemetryPosition 中的 -6 偏移（即 60 米/10）相对应。
+    const halfWorldX = 60;
+    const halfWorldZ = 60;
+    const nextPosition: [number, number, number] = [
+      Number((halfWorldX + eastM).toFixed(2)),
+      Number(altitudeM.toFixed(2)),
+      Number((halfWorldZ - northM).toFixed(2)),
+    ];
+    const enriched: SimulationDevice = editingDevice
+      ? {
+          ...editingDevice,
+          kind: selectedKind,
+          name: finalDeviceName,
+          capabilityTags: capabilityTags.slice(),
+          physicalProfile: profile,
+          telemetry: {
+            ...editingDevice.telemetry,
+            position: nextPosition,
+            batteryPercent,
+            powerW: profile.nominalPowerW,
+          },
+          updatedAt: new Date().toISOString(),
+        }
+      : {
+          ...draft,
+          name: finalDeviceName,
+          capabilityTags: capabilityTags.slice(),
+          telemetry: {
+            ...draft.telemetry,
+            position: nextPosition,
+          },
+        };
 
-    registerDevice(enriched);
+    if (editingDevice) {
+      updateDevice(enriched);
+    } else {
+      registerDevice(enriched);
+    }
     appendLog({
       level: 'info',
       scope: 'device',
-      message: t('createDeviceWindow.statusSubmitted', { name: enriched.name }),
+      message: t(
+        editingDevice ? 'createDeviceWindow.statusUpdated' : 'createDeviceWindow.statusSubmitted',
+        { name: enriched.name },
+      ),
       details: `kind=${enriched.kind} tags=${enriched.capabilityTags.join(',')} tasks=${supportedTasks.join(',')}`,
     });
-    setStatus(t('createDeviceWindow.statusSubmitted', { name: enriched.name }));
+    setStatus(t(
+      editingDevice ? 'createDeviceWindow.statusUpdated' : 'createDeviceWindow.statusSubmitted',
+      { name: enriched.name },
+    ));
     setSubmitted(true);
     closeDialog();
   };
@@ -702,7 +792,7 @@ export function CreateDeviceWindow() {
   ];
 
   const nextLabel = currentStep === 4
-    ? t('createDeviceWindow.actions.create')
+    ? t(isEditMode ? 'createDeviceWindow.actions.save' : 'createDeviceWindow.actions.create')
     : t('createDeviceWindow.actions.nextTo', { name: stepLabels[currentStep]?.label ?? '' });
 
   return (
@@ -729,8 +819,12 @@ export function CreateDeviceWindow() {
             </span>
           </div>
           <div className="create-device-title-block" onMouseDown={startWindowDrag}>
-            <h1 id="create-device-title">{t('createDeviceWindow.title')}</h1>
-            <p>{t('createDeviceWindow.subtitle')}</p>
+            <h1 id="create-device-title">
+              {isEditMode
+                ? t('createDeviceWindow.editTitle', { name: editingDevice?.name ?? '' })
+                : t('createDeviceWindow.title')}
+            </h1>
+            <p>{isEditMode ? t('createDeviceWindow.editSubtitle') : t('createDeviceWindow.subtitle')}</p>
           </div>
           <nav className="create-device-stepper" aria-label={t('createDeviceWindow.stepperAria')}>
             {stepLabels.map((step) => (

@@ -1,9 +1,10 @@
-import { FiCheckCircle, FiClock, FiList } from 'react-icons/fi';
+import { FiCheckCircle, FiClock, FiList, FiX } from 'react-icons/fi';
 import { useTranslation } from 'react-i18next';
-import { Toolbar } from '../components/Toolbar';
 import { TelemetryChart, type TelemetrySeries } from '../components/TelemetryChart';
 import { TerminalLog, type TerminalEntry } from '../components/TerminalLog';
 import { useSimulation } from '../state';
+import { closeDialogWindow, startDialogWindowDrag } from '../utils';
+import terminalLogoMarkUrl from '../../assets/design/logo.png';
 
 export interface TaskWindowProps {
   taskId: string;
@@ -57,45 +58,112 @@ export function TaskWindow({ taskId, taskName = 'Task', telemetry = defaultTelem
         message: entry.message,
       }))
     : logs;
+
   return (
-    <div className="sim-page sim-page-grid">
-      <Toolbar
-        title={t('taskWindow.title', { title: task?.title ?? taskName, id: taskId || 'unknown' })}
-        subtitle={t('taskWindow.subtitle', { status: task?.status ?? t('common.unknown') })}
-        actions={[
-          { id: 'complete', icon: <FiCheckCircle />, label: t('taskWindow.markComplete'), onClick: () => appendLog({ level: 'info', scope: 'task', message: t('taskWindow.completeLog', { title: task?.title ?? taskId }), details: taskId }) },
-        ]}
+    <div className="terminal-detail-page">
+      <section
+        className="terminal-detail-shell"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-window-title"
       >
-        <span className="sim-chip">TaskWindow</span>
-        <span className="sim-chip">Subtasks</span>
-        <span className="sim-chip">Timeline</span>
-      </Toolbar>
-
-      <div
-        className="sim-responsive-grid sim-task-layout grid grid-cols-[minmax(320px,0.92fr)_minmax(0,1.08fr)] items-stretch gap-4"
-      >
-        <section className="sim-panel sim-panel-scroll">
-          <div className="sim-section-title">
-            <FiList />
-            <span>{t('taskWindow.list')}</span>
+        <header
+          className="terminal-detail-header"
+          onMouseDown={(event) => {
+            if (event.button === 0 && event.target === event.currentTarget) {
+              startDialogWindowDrag();
+            }
+          }}
+        >
+          <div className="terminal-detail-brand" onMouseDown={startDialogWindowDrag}>
+            <img src={terminalLogoMarkUrl} alt="" />
+            <span className="brand-wordmark">
+              <span className="brand-wordmark-prefix">Terminal</span>
+              <span className="brand-wordmark-suffix">Link</span>
+            </span>
           </div>
-
-          <div className="sim-scroll-list grid gap-2.5">
-            {goalTasks.length ? goalTasks.map((item) => (
-              <div key={item.id} className="sim-row flex items-center gap-3 px-3 py-2.5 text-sm">
-                <span className={item.status === 'completed' ? 'sim-status-completed' : 'sim-status-active'}>{item.status}</span>
-                <span className="flex-1">{item.title}</span>
-                <FiClock />
-              </div>
-            )) : <div className="text-sm text-sim-muted">{t('taskWindow.empty')}</div>}
+          <div className="terminal-detail-title-block" onMouseDown={startDialogWindowDrag}>
+            <h1 id="task-window-title">
+              {t('taskWindow.title', { title: task?.title ?? taskName, id: taskId || 'unknown' })}
+            </h1>
+            <p>{t('taskWindow.subtitle', { status: task?.status ?? t('common.unknown') })}</p>
           </div>
-        </section>
+          <div className="terminal-detail-chip-row">
+            <span className="terminal-detail-chip">TaskWindow</span>
+            <span className="terminal-detail-chip">Subtasks</span>
+            <span className="terminal-detail-chip">Timeline</span>
+          </div>
+          <div className="terminal-detail-actions">
+            <button
+              type="button"
+              className="terminal-detail-action terminal-detail-action-primary"
+              onClick={() =>
+                appendLog({
+                  level: 'info',
+                  scope: 'task',
+                  message: t('taskWindow.completeLog', { title: task?.title ?? taskId }),
+                  details: taskId,
+                })
+              }
+            >
+              <FiCheckCircle />
+              {t('taskWindow.markComplete')}
+            </button>
+          </div>
+          <button
+            type="button"
+            className="terminal-detail-close"
+            aria-label={t('common.close')}
+            onClick={() => closeDialogWindow()}
+          >
+            <FiX />
+          </button>
+        </header>
 
-        <div className="sim-window-column grid-rows-[240px_280px]">
-          <TelemetryChart title={t('taskWindow.telemetryTitle')} subtitle={t('taskWindow.telemetrySubtitle')} unit="%" targetValue={100} series={resolvedTelemetry} />
-          <TerminalLog title={t('taskWindow.logTitle')} entries={resolvedLogs} />
-        </div>
-      </div>
+        <main className="terminal-detail-body" data-cols="2">
+          <section className="terminal-detail-panel">
+            <div className="terminal-detail-section-header">
+              <h2>
+                <FiList />
+                <span>{t('taskWindow.list')}</span>
+              </h2>
+              <span>{goalTasks.length}</span>
+            </div>
+
+            <div className="terminal-detail-panel-body">
+              {goalTasks.length ? (
+                goalTasks.map((item) => (
+                  <div
+                    key={item.id}
+                    className="terminal-detail-task-row"
+                    data-status={item.status}
+                  >
+                    <span className="terminal-detail-task-status">{item.status}</span>
+                    <div>
+                      <strong>{item.title}</strong>
+                      <small>{item.description || item.kind}</small>
+                    </div>
+                    <FiClock />
+                  </div>
+                ))
+              ) : (
+                <div className="terminal-detail-hint">{t('taskWindow.empty')}</div>
+              )}
+            </div>
+          </section>
+
+          <div className="terminal-detail-panel-column" data-rows="split-double">
+            <TelemetryChart
+              title={t('taskWindow.telemetryTitle')}
+              subtitle={t('taskWindow.telemetrySubtitle')}
+              unit="%"
+              targetValue={100}
+              series={resolvedTelemetry}
+            />
+            <TerminalLog title={t('taskWindow.logTitle')} entries={resolvedLogs} />
+          </div>
+        </main>
+      </section>
     </div>
   );
 }

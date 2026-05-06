@@ -15,6 +15,7 @@ import {
   FiEdit2,
   FiFolder,
   FiGlobe,
+  FiMap,
   FiMapPin,
   FiMaximize2,
   FiMic,
@@ -37,6 +38,7 @@ import {
   FiUser,
   FiWind,
   FiWifi,
+  FiX,
 } from 'react-icons/fi';
 import {
   GiDeliveryDrone,
@@ -49,18 +51,21 @@ import {
   TbAdjustmentsHorizontal,
   TbDeviceFloppy,
   TbStereoGlasses,
+  TbWorldDownload,
   TbWorldPlus,
 } from 'react-icons/tb';
 import { useTranslation } from 'react-i18next';
+import { BatteryIcon } from '../components/BatteryIcon';
 import { IconButton } from '../components/IconButton';
 import type { TerminalEntry } from '../components/TerminalLog';
-import { WorldScene, mapDeviceTelemetryPosition, deviceEyeHeightM } from '../components/WorldScene';
+import { WorldScene, mapDeviceTelemetryPosition, deviceEyeHeightM, deviceGeoPosition, resolveWorldCenter } from '../components/WorldScene';
 import type { WorldSceneFocusTarget } from '../components/WorldScene';
 import { SceneOverlay, useSceneTools } from '../components/sceneOverlay';
+import type { WorldSceneCameraController } from '../components/sceneOverlay/sceneTypes';
 import { formatTime } from '../i18n';
 import { useSimulation, useDeviceGroups, DEVICE_GROUP_COLOR_PALETTE } from '../state';
 import type { DeviceGroup } from '../state';
-import type { GoalPriority, SimulationDevice, SimulationGoal, SimulationTask } from '../types';
+import type { GoalPriority, SimulationDevice, SimulationGoal, SimulationTask, WorldSnapshotRecord } from '../types';
 import thumbAutelEvoMaxUrl from '../../assets/design/device-thumb-autel-evo-max-4t.png';
 import thumbDjiMatriceUrl from '../../assets/design/device-thumb-dji-matrice-30t.png';
 import thumbDjiMavicUrl from '../../assets/design/device-thumb-dji-mavic-3e.png';
@@ -427,6 +432,8 @@ export function WorldWindow() {
     openWindow,
     saveWorldSnapshot,
     listWorldSnapshots,
+    openWorldSnapshot,
+    deleteWorldSnapshot,
     appendLog,
     submitGoal,
     tickSimulation,
@@ -434,8 +441,33 @@ export function WorldWindow() {
     setPhase,
     setLocale,
     setThemeMode,
+    removeDevice,
   } = useSimulation();
   const [selectedDeviceId, setSelectedDeviceId] = useState(state.devices[0]?.id ?? '');
+  const [deviceContextMenu, setDeviceContextMenu] = useState<{
+    x: number;
+    y: number;
+    deviceId: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!deviceContextMenu) {
+      return undefined;
+    }
+    const close = () => setDeviceContextMenu(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        close();
+      }
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('contextmenu', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('contextmenu', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [deviceContextMenu]);
   const [viewMode, setViewMode] = useState<ViewMode>('global');
   const [humanRoamStart, setHumanRoamStart] = useState<{ lon: number; lat: number; headingDeg?: number } | null>(null);
   const [query, setQuery] = useState('');
@@ -461,6 +493,12 @@ export function WorldWindow() {
   const [priority, setPriority] = useState<'normal' | 'high' | 'urgent'>('high');
   const [activeDecisionStage, setActiveDecisionStage] = useState<DecisionStageId>('dispatch');
   const [snapshotStatus, setSnapshotStatus] = useState(() => t('worldWindowExtra.snapshot.unread'));
+  const [snapshotDialogOpen, setSnapshotDialogOpen] = useState(false);
+  const [snapshotDialogRecords, setSnapshotDialogRecords] = useState<WorldSnapshotRecord[]>([]);
+  const [snapshotDialogLoading, setSnapshotDialogLoading] = useState(false);
+  const [snapshotDialogError, setSnapshotDialogError] = useState<string | null>(null);
+  const [snapshotDialogOpeningName, setSnapshotDialogOpeningName] = useState<string | null>(null);
+  const [snapshotDialogDeletingName, setSnapshotDialogDeletingName] = useState<string | null>(null);
   const [pendingReset, setPendingReset] = useState(false);
   const [clearedLogScopes, setClearedLogScopes] = useState<Record<string, string>>({});
   const [localeMenuOpen, setLocaleMenuOpen] = useState(false);
@@ -475,6 +513,7 @@ export function WorldWindow() {
     },
   ]);
   const sceneTools = useSceneTools();
+  const cameraControllerRef = useRef<WorldSceneCameraController | null>(null);
   const [cameraHeadingDeg, setCameraHeadingDeg] = useState(0);
   const [cameraPitchDeg, setCameraPitchDeg] = useState(-30);
   const [focusTarget, setFocusTarget] = useState<WorldSceneFocusTarget | null>(null);
@@ -519,22 +558,21 @@ export function WorldWindow() {
   const focusGeoFromDevice = useCallback(
     (deviceId: string) => {
       const device = state.devices.find((entry) => entry.id === deviceId);
-      const metadata = state.world.objects.find((object) => object.properties?.world_metadata === 'true')?.properties;
-      const lat = metadata?.center_lat ? Number.parseFloat(metadata.center_lat) : Number.NaN;
-      const lon = metadata?.center_lon ? Number.parseFloat(metadata.center_lon) : Number.NaN;
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      if (!device) {
         return;
       }
-      const altitude = device?.kind === 'drone' ? Math.max(20, device.telemetry.position[1]) : 1.6;
+      const center = resolveWorldCenter(state.world.objects, state.world.metadata);
+      const geo = deviceGeoPosition(center, device);
+      const altitude = device.kind === 'drone' ? Math.max(1, geo.height) : Math.max(1.6, geo.height);
       setFocusTarget({
         key: `device-${deviceId}-${Date.now()}`,
-        lon,
-        lat,
+        lon: geo.lon,
+        lat: geo.lat,
         height: altitude,
         range: 280,
       });
     },
-    [state.devices, state.world.objects],
+    [state.devices, state.world.objects, state.world.metadata],
   );
 
   const focusGeoFromObject = useCallback(
@@ -698,6 +736,90 @@ export function WorldWindow() {
     }));
   };
 
+  const openSnapshotDialog = () => {
+    setSnapshotDialogOpen(true);
+    setSnapshotDialogLoading(true);
+    setSnapshotDialogError(null);
+    void listWorldSnapshots()
+      .then((records) => {
+        const sorted = [...records].sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1));
+        setSnapshotDialogRecords(sorted);
+        setSnapshotStatus(
+          sorted.length
+            ? t('worldWindowExtra.snapshot.readCount', { count: sorted.length })
+            : t('worldWindowExtra.snapshot.empty'),
+        );
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : t('worldWindowExtra.snapshot.readFailed');
+        setSnapshotDialogError(message);
+        setSnapshotStatus(message);
+      })
+      .finally(() => setSnapshotDialogLoading(false));
+  };
+
+  const closeSnapshotDialog = () => {
+    if (snapshotDialogOpeningName || snapshotDialogDeletingName) {
+      return;
+    }
+    setSnapshotDialogOpen(false);
+  };
+
+  const handleDeleteSnapshot = (record: WorldSnapshotRecord) => {
+    if (snapshotDialogDeletingName || snapshotDialogOpeningName) {
+      return;
+    }
+    setSnapshotDialogDeletingName(record.snapshotName);
+    setSnapshotDialogError(null);
+    void deleteWorldSnapshot(record.snapshotName)
+      .then((records) => {
+        const sorted = [...records].sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1));
+        setSnapshotDialogRecords(sorted);
+        const displayName = record.worldName?.trim() || record.snapshotName;
+        setSnapshotStatus(t('worldWindowExtra.snapshot.deletedName', { name: displayName }));
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : t('worldWindowExtra.snapshot.deleteFailed');
+        setSnapshotDialogError(message);
+        setSnapshotStatus(message);
+      })
+      .finally(() => setSnapshotDialogDeletingName(null));
+  };
+
+  const handleOpenSnapshot = (record: WorldSnapshotRecord) => {
+    if (snapshotDialogOpeningName || snapshotDialogDeletingName) {
+      return;
+    }
+    setSnapshotDialogOpeningName(record.snapshotName);
+    setSnapshotDialogError(null);
+    void openWorldSnapshot(record.snapshotName)
+      .then(() => {
+        const displayName = record.worldName?.trim() || record.snapshotName;
+        setSnapshotStatus(t('worldWindowExtra.snapshot.openedName', { name: displayName }));
+        setSnapshotDialogOpen(false);
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : t('worldWindowExtra.snapshot.openFailed');
+        setSnapshotDialogError(message);
+        setSnapshotStatus(message);
+      })
+      .finally(() => setSnapshotDialogOpeningName(null));
+  };
+
+  const formatSnapshotTimestamp = (value: string) => {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return value;
+    }
+    return parsed.toLocaleString(state.settings.locale, {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
   return (
     <div className="sim-page terminal-dashboard">
       <header className="terminal-topbar">
@@ -842,20 +964,16 @@ export function WorldWindow() {
               <img src={DEVICE_THUMBS_BY_KIND.wheeled_robot} alt="" aria-hidden="true" className="terminal-filter-thumb" />
               {state.devices.filter((device) => device.kind === 'wheeled_robot').length}
             </span>
-            <span>
-              <img src={DEVICE_THUMBS_BY_KIND.quadruped} alt="" aria-hidden="true" className="terminal-filter-thumb" />
-              {state.devices.filter((device) => device.kind === 'quadruped').length}
-            </span>
             <span aria-label={t('worldWindowExtra.sidebar.unitreeAria')}>
-              <img src={DEVICE_THUMBS_BY_KIND.unitree_robot} alt="" aria-hidden="true" className="terminal-filter-thumb" />
-              {state.devices.filter((device) => device.kind === 'unitree_robot').length}
+              <img src={DEVICE_THUMBS_BY_KIND.quadruped} alt="" aria-hidden="true" className="terminal-filter-thumb" />
+              {state.devices.filter((device) => device.kind === 'quadruped' || device.kind === 'unitree_robot').length}
             </span>
             <span>
               <img src={DEVICE_THUMBS_BY_KIND.humanoid} alt="" aria-hidden="true" className="terminal-filter-thumb" />
               {state.devices.filter((device) => device.kind === 'humanoid').length}
             </span>
             <span>
-              <img src={DEVICE_THUMBS_BY_KIND.sensor_node} alt="" aria-hidden="true" className="terminal-filter-thumb" />
+              <GiMovementSensor aria-hidden="true" className="terminal-filter-thumb terminal-filter-thumb-icon" />
               {state.devices.filter((device) => device.kind === 'sensor_node').length}
             </span>
           </div>
@@ -916,7 +1034,9 @@ export function WorldWindow() {
                   className={`terminal-device-card ${selectedDevice?.id === device.id ? 'terminal-device-card-active' : ''}`}
                   onClick={() => {
                     setSelectedDeviceId(device.id);
-                    setViewMode('device');
+                    if (viewMode === 'global') {
+                      focusGeoFromDevice(device.id);
+                    }
                   }}
                   onDoubleClick={() =>
                     void openWindow({
@@ -928,6 +1048,11 @@ export function WorldWindow() {
                       height: 760,
                     })
                   }
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setDeviceContextMenu({ x: event.clientX, y: event.clientY, deviceId: device.id });
+                  }}
                 >
                   <span className="terminal-device-thumb">
                     <img src={thumbUrl} alt="" aria-hidden="true" />
@@ -938,10 +1063,20 @@ export function WorldWindow() {
                   <span className="terminal-device-copy">
                     <strong>{device.name}</strong>
                     <small>{deviceShortType(device.kind, t)}</small>
-                    <small>{t('worldWindowExtra.sidebar.batteryShort', { value: Math.round(device.telemetry.batteryPercent) })}</small>
+                    <small className="terminal-device-battery">
+                      <BatteryIcon percent={device.telemetry.batteryPercent} />
+                      <span>{Math.round(device.telemetry.batteryPercent)}%</span>
+                    </small>
                     <small><FiMapPin /> {t('worldWindowExtra.sidebar.positionShort', { value: formatPosition(device) })}</small>
                   </span>
                   <span className="terminal-device-meta">
+                    <span
+                      className="terminal-device-signal"
+                      data-online={device.status === 'offline' ? 'false' : 'true'}
+                      aria-hidden="true"
+                    >
+                      <FiWifi />
+                    </span>
                     {ownerGroup ? (
                       <span
                         className="terminal-device-group-tag"
@@ -950,9 +1085,7 @@ export function WorldWindow() {
                       >
                         {ownerGroup.name}
                       </span>
-                    ) : (
-                      <FiWifi />
-                    )}
+                    ) : null}
                     <b>{statusLabel(device.status, t)}</b>
                   </span>
                 </button>
@@ -965,6 +1098,54 @@ export function WorldWindow() {
               </div>
             )}
           </div>
+
+          {deviceContextMenu ? (() => {
+            const targetDevice = state.devices.find((device) => device.id === deviceContextMenu.deviceId);
+            if (!targetDevice) {
+              return null;
+            }
+            return (
+              <div
+                className="terminal-device-context-menu"
+                role="menu"
+                style={{ left: deviceContextMenu.x, top: deviceContextMenu.y }}
+                onPointerDown={(event) => event.stopPropagation()}
+                onContextMenu={(event) => event.preventDefault()}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="terminal-device-context-menu-item"
+                  onClick={() => {
+                    const id = deviceContextMenu.deviceId;
+                    setDeviceContextMenu(null);
+                    void openWindow({
+                      label: `edit-device-${id}`,
+                      kind: 'create_device',
+                      route: `/edit-device/${id}`,
+                      title: t('worldWindowExtra.sidebar.contextMenu.editTitle', { name: targetDevice.name }),
+                      width: 1120,
+                      height: 900,
+                    });
+                  }}
+                >
+                  {t('worldWindowExtra.sidebar.contextMenu.edit')}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="terminal-device-context-menu-item terminal-device-context-menu-danger"
+                  onClick={() => {
+                    const id = deviceContextMenu.deviceId;
+                    setDeviceContextMenu(null);
+                    removeDevice(id);
+                  }}
+                >
+                  {t('worldWindowExtra.sidebar.contextMenu.delete')}
+                </button>
+              </div>
+            );
+          })() : null}
 
           <button
             type="button"
@@ -1164,6 +1345,7 @@ export function WorldWindow() {
             objects={state.world.objects}
             devices={devicesInScene}
             weather={state.world.terrain}
+            wallClockAt={state.clock.wallClockAt}
             showAxes={false}
             hidePrimaryDevice
             tickIntervalMs={state.settings.tickIntervalMs}
@@ -1184,6 +1366,7 @@ export function WorldWindow() {
             onSelectOverlay={sceneTools.selectOverlay}
             onCameraPoseChange={handleScenePoseChange}
             focusTarget={focusTarget}
+            cameraControllerRef={cameraControllerRef}
           />
 
           <SceneOverlay
@@ -1197,6 +1380,7 @@ export function WorldWindow() {
             onResetNorth={handleResetNorth}
             onFocusDevice={focusGeoFromDevice}
             onFocusObject={focusGeoFromObject}
+            cameraControllerRef={cameraControllerRef}
           />
 
         </section>
@@ -1468,6 +1652,11 @@ export function WorldWindow() {
           }
         />
         <IconButton
+          icon={<TbWorldDownload />}
+          label={t('worldWindowExtra.playback.openWorldLabel')}
+          onClick={openSnapshotDialog}
+        />
+        <IconButton
           icon={<TbAdjustmentsHorizontal />}
           label={t('worldWindowExtra.playback.controlPanelLabel')}
           onClick={() =>
@@ -1497,20 +1686,128 @@ export function WorldWindow() {
         />
         <IconButton icon={<TbDeviceFloppy />} label={t('worldWindowExtra.playback.saveSnapshot')} onClick={() => void saveWorldSnapshot(`world_${state.world.id}_${Date.now()}`)} />
         <IconButton
-          icon={<FiSettings />}
-          label={t('worldWindowExtra.playback.settingsLabel')}
+          icon={<FiMap />}
+          label={t('worldWindowExtra.playback.editWorldLabel')}
           onClick={() =>
             void openWindow({
-              label: 'sim-settings',
-              kind: 'settings',
-              route: '/settings',
-              title: t('worldWindowExtra.playback.settingsTitle'),
-              width: 720,
-              height: 640,
+              label: 'edit-world',
+              kind: 'create_world',
+              route: '/create-world?mode=edit',
+              title: t('worldWindowExtra.playback.editWorldTitle'),
+              width: 940,
+              height: 760,
             })
           }
         />
       </div>
+
+      {snapshotDialogOpen ? (
+        <div
+          className="terminal-snapshot-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="terminal-snapshot-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              closeSnapshotDialog();
+            }
+          }}
+        >
+          <div className="terminal-snapshot-card">
+            <div className="terminal-snapshot-header">
+              <strong id="terminal-snapshot-title">{t('worldWindowExtra.snapshot.dialogTitle')}</strong>
+              <button
+                type="button"
+                className="terminal-snapshot-close"
+                aria-label={t('worldWindowExtra.snapshot.dialogClose')}
+                onClick={closeSnapshotDialog}
+                disabled={Boolean(snapshotDialogOpeningName || snapshotDialogDeletingName)}
+              >
+                <FiX />
+              </button>
+            </div>
+            <p className="terminal-snapshot-summary">
+              {t('worldWindowExtra.snapshot.dialogSummary')}
+            </p>
+            <div className="terminal-snapshot-body">
+              {snapshotDialogLoading ? (
+                <div className="terminal-snapshot-empty">{t('worldWindowExtra.snapshot.dialogLoading')}</div>
+              ) : snapshotDialogRecords.length === 0 ? (
+                <div className="terminal-snapshot-empty">{t('worldWindowExtra.snapshot.dialogEmpty')}</div>
+              ) : (
+                <ul className="terminal-snapshot-list">
+                  {snapshotDialogRecords.map((record) => {
+                    const opening = snapshotDialogOpeningName === record.snapshotName;
+                    const deleting = snapshotDialogDeletingName === record.snapshotName;
+                    const busy = Boolean(snapshotDialogOpeningName || snapshotDialogDeletingName);
+                    const displayName = record.worldName?.trim() || record.snapshotName;
+                    return (
+                      <li key={record.path} className="terminal-snapshot-item">
+                        <div className="terminal-snapshot-item-info">
+                          <strong title={displayName}>{displayName}</strong>
+                          <small className="terminal-snapshot-item-id" title={record.snapshotName}>
+                            {t('worldWindowExtra.snapshot.snapshotIdLabel', { value: record.snapshotName })}
+                          </small>
+                          <small>
+                            {t('worldWindowExtra.snapshot.modifiedAt', { value: formatSnapshotTimestamp(record.modifiedAt) })}
+                          </small>
+                          {record.worldCreatedAt ? (
+                            <small>
+                              {t('worldWindowExtra.snapshot.createdAt', { value: formatSnapshotTimestamp(record.worldCreatedAt) })}
+                            </small>
+                          ) : null}
+                          <span title={record.path}>{record.path}</span>
+                        </div>
+                        <div className="terminal-snapshot-item-actions">
+                          <button
+                            type="button"
+                            className="terminal-snapshot-open-button"
+                            onClick={() => handleOpenSnapshot(record)}
+                            disabled={busy}
+                          >
+                            {opening
+                              ? t('worldWindowExtra.snapshot.opening')
+                              : t('worldWindowExtra.snapshot.openButton')}
+                          </button>
+                          <button
+                            type="button"
+                            className="terminal-snapshot-delete-button"
+                            onClick={() => handleDeleteSnapshot(record)}
+                            disabled={busy}
+                            aria-label={t('worldWindowExtra.snapshot.deleteAria', { name: displayName })}
+                            title={t('worldWindowExtra.snapshot.deleteAria', { name: displayName })}
+                          >
+                            {deleting ? (
+                              <span className="terminal-snapshot-delete-pending">
+                                {t('worldWindowExtra.snapshot.deleting')}
+                              </span>
+                            ) : (
+                              <FiTrash2 />
+                            )}
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+            {snapshotDialogError ? (
+              <div className="terminal-snapshot-error">{snapshotDialogError}</div>
+            ) : null}
+            <div className="terminal-snapshot-footer">
+              <button
+                type="button"
+                className="terminal-snapshot-secondary"
+                onClick={closeSnapshotDialog}
+                disabled={Boolean(snapshotDialogOpeningName || snapshotDialogDeletingName)}
+              >
+                {t('worldWindowExtra.snapshot.dialogClose')}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -22,14 +22,17 @@ export const SIMULATION_COMMANDS = {
   loadState: 'load_state',
   saveState: 'save_state',
   generateWorld: 'generate_world',
+  updateWorldSettings: 'update_world_settings',
   registerDevice: 'register_device',
   removeDevice: 'remove_device',
+  updateDevice: 'update_device',
   submitGoal: 'submit_goal',
   tickSimulation: 'tick_simulation',
   updateSettings: 'update_settings',
   saveWorldSnapshot: 'save_world_snapshot',
   listWorldSnapshots: 'list_world_snapshots',
   openWorldSnapshot: 'open_world_snapshot',
+  deleteWorldSnapshot: 'delete_world_snapshot',
   resolveIpLocation: 'resolve_ip_location',
   resolveNativeLocation: 'resolve_native_location',
   tileCacheGetConfig: 'tile_cache_get_config',
@@ -119,6 +122,26 @@ export interface GenerateWorldInput {
   };
 }
 
+export interface UpdateWorldSettingsInput {
+  input: {
+    name?: string;
+    description?: string;
+    street_address?: string;
+    district?: string;
+    center_lat?: number;
+    center_lon?: number;
+    radius_m?: number;
+    data_source?: string;
+    weather?: string;
+    wind_speed_mps?: number;
+    weather_strength_pct?: number;
+    light_hour?: number;
+    world_time?: string;
+    time_speed?: number;
+    terrain_source?: string;
+  };
+}
+
 export interface RegisterDeviceInput {
   input: {
     name: string;
@@ -133,6 +156,19 @@ export interface RegisterDeviceInput {
 
 export interface RemoveDeviceInput {
   deviceId: string;
+}
+
+export interface UpdateDeviceInput {
+  input: {
+    device_id: string;
+    name?: string;
+    kind?: ExtendedRustDeviceKind;
+    battery?: number;
+    position?: RustVector3;
+    capabilities?: string[];
+    battery_capacity?: number;
+    physical_profile?: RustDevicePhysicalProfile;
+  };
 }
 
 export interface SubmitGoalInput {
@@ -306,6 +342,9 @@ interface RustWorldSnapshotRecord {
   snapshot_name: string;
   path: string;
   modified_at: string;
+  world_name?: string | null;
+  world_created_at?: string | null;
+  world_updated_at?: string | null;
 }
 
 const rustToDeviceKind: Record<ExtendedRustDeviceKind, DeviceKind> = {
@@ -724,6 +763,14 @@ export async function generateWorld(input: GenerateWorldInput['input']) {
   return 'devices' in state ? (state as SimulationState) : fromRustSimulationState(state as RustSimulationState);
 }
 
+export async function updateWorldSettings(input: UpdateWorldSettingsInput['input']) {
+  const state = await invokeApp<SimulationState | RustSimulationState>(
+    SIMULATION_COMMANDS.updateWorldSettings,
+    { input } satisfies UpdateWorldSettingsInput,
+  );
+  return 'devices' in state ? (state as SimulationState) : fromRustSimulationState(state as RustSimulationState);
+}
+
 export async function registerDevice(device: SimulationDevice) {
   const input: RegisterDeviceInput['input'] = {
     name: device.name,
@@ -749,6 +796,30 @@ export async function registerDevice(device: SimulationDevice) {
 
 export async function removeDevice(deviceId: string) {
   const state = await invokeApp<SimulationState | RustSimulationState>(SIMULATION_COMMANDS.removeDevice, { deviceId } satisfies RemoveDeviceInput);
+  return 'devices' in state ? (state as SimulationState) : fromRustSimulationState(state as RustSimulationState);
+}
+
+export async function updateDevice(device: SimulationDevice) {
+  const input: UpdateDeviceInput['input'] = {
+    device_id: device.id,
+    name: device.name,
+    kind: deviceKindToRust[device.kind],
+    battery: device.telemetry.batteryPercent,
+    battery_capacity: 100,
+    position: tupleToVector(device.telemetry.position),
+    physical_profile: {
+      min_work_altitude_m: device.physicalProfile.minWorkAltitudeM,
+      max_work_altitude_m: device.physicalProfile.maxWorkAltitudeM,
+      max_slope_deg: device.physicalProfile.maxSlopeDeg,
+      supported_materials: [...device.physicalProfile.supportedMaterials],
+      nominal_power_w: device.physicalProfile.nominalPowerW,
+      working_power_w: device.physicalProfile.workingPowerW,
+      max_speed_mps: device.physicalProfile.maxSpeedMps,
+      joint_count: device.physicalProfile.jointCount,
+    },
+    capabilities: device.capabilityTags,
+  };
+  const state = await invokeApp<SimulationState | RustSimulationState>(SIMULATION_COMMANDS.updateDevice, { input } satisfies UpdateDeviceInput);
   return 'devices' in state ? (state as SimulationState) : fromRustSimulationState(state as RustSimulationState);
 }
 
@@ -803,13 +874,37 @@ export async function saveWorldSnapshot(snapshotName?: string) {
 export async function listWorldSnapshots(): Promise<WorldSnapshotRecord[]> {
   const records = await invokeApp<WorldSnapshotRecord[] | RustWorldSnapshotRecord[]>(SIMULATION_COMMANDS.listWorldSnapshots);
   return records.map((record) => 'snapshot_name' in record
-    ? { snapshotName: record.snapshot_name, path: record.path, modifiedAt: record.modified_at }
+    ? {
+        snapshotName: record.snapshot_name,
+        path: record.path,
+        modifiedAt: record.modified_at,
+        worldName: record.world_name ?? undefined,
+        worldCreatedAt: record.world_created_at ?? undefined,
+        worldUpdatedAt: record.world_updated_at ?? undefined,
+      }
     : record);
 }
 
 export async function openWorldSnapshot(snapshotName: string) {
   const state = await invokeApp<SimulationState | RustSimulationState>(SIMULATION_COMMANDS.openWorldSnapshot, { input: { snapshot_name: snapshotName } });
   return 'devices' in state ? (state as SimulationState) : fromRustSimulationState(state as RustSimulationState);
+}
+
+export async function deleteWorldSnapshot(snapshotName: string): Promise<WorldSnapshotRecord[]> {
+  const records = await invokeApp<WorldSnapshotRecord[] | RustWorldSnapshotRecord[]>(
+    SIMULATION_COMMANDS.deleteWorldSnapshot,
+    { input: { snapshot_name: snapshotName } },
+  );
+  return records.map((record) => 'snapshot_name' in record
+    ? {
+        snapshotName: record.snapshot_name,
+        path: record.path,
+        modifiedAt: record.modified_at,
+        worldName: record.world_name ?? undefined,
+        worldCreatedAt: record.world_created_at ?? undefined,
+        worldUpdatedAt: record.world_updated_at ?? undefined,
+      }
+    : record);
 }
 
 export type { DeviceKind, GoalPriority, ThemeMode };

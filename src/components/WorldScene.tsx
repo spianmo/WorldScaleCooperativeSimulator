@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CesiumWidget as CesiumWidgetType, Cesium3DTileset } from '@cesium/engine';
 import ArcType from '@cesium/engine/Source/Core/ArcType.js';
@@ -17,6 +17,7 @@ import GoogleMaps from '@cesium/engine/Source/Core/GoogleMaps.js';
 import HeadingPitchRange from '@cesium/engine/Source/Core/HeadingPitchRange.js';
 import HeadingPitchRoll from '@cesium/engine/Source/Core/HeadingPitchRoll.js';
 import Ion from '@cesium/engine/Source/Core/Ion.js';
+import JulianDate from '@cesium/engine/Source/Core/JulianDate.js';
 import CesiumMath from '@cesium/engine/Source/Core/Math.js';
 import Matrix4 from '@cesium/engine/Source/Core/Matrix4.js';
 import NearFarScalar from '@cesium/engine/Source/Core/NearFarScalar.js';
@@ -29,6 +30,7 @@ import ClassificationType from '@cesium/engine/Source/Scene/ClassificationType.j
 import HeightReference from '@cesium/engine/Source/Scene/HeightReference.js';
 import HorizontalOrigin from '@cesium/engine/Source/Scene/HorizontalOrigin.js';
 import LabelStyle from '@cesium/engine/Source/Scene/LabelStyle.js';
+import ShadowMode from '@cesium/engine/Source/Scene/ShadowMode.js';
 import VerticalOrigin from '@cesium/engine/Source/Scene/VerticalOrigin.js';
 import createGooglePhotorealistic3DTileset from '@cesium/engine/Source/Scene/createGooglePhotorealistic3DTileset.js';
 import CesiumWidget from '@cesium/engine/Source/Widget/CesiumWidget.js';
@@ -44,11 +46,30 @@ import {
   type SceneMarker,
   type SceneMeasurement,
   type SceneSettings,
+  type WorldSceneCameraController,
 } from './sceneOverlay/sceneTypes';
 import type { SceneOverlaySelection } from './sceneOverlay/useSceneTools';
+import ModelGraphics from '@cesium/engine/Source/DataSources/ModelGraphics.js';
 import djiMavicUrl from '../../assets/models/baked/dji_mavic.glb';
 import unitreeG1Glb from '../../assets/models/baked/unitree_g1.glb';
 import unitreeGo2Glb from '../../assets/models/baked/unitree_go2.glb';
+import parrotBebopGlb from '../../assets/models/Parrot_Bebop.glb';
+import { getWheeledRobotGlbUrl } from '../utils/wheeledRobotMesh';
+
+let wheeledRobotGlbUrl: string | undefined;
+let wheeledRobotGlbPromise: Promise<string> | null = null;
+function ensureWheeledRobotGlb(): Promise<string> {
+  if (!wheeledRobotGlbPromise) {
+    wheeledRobotGlbPromise = getWheeledRobotGlbUrl();
+    wheeledRobotGlbPromise
+      .then((url) => {
+        wheeledRobotGlbUrl = url;
+      })
+      .catch(() => {});
+  }
+  return wheeledRobotGlbPromise;
+}
+ensureWheeledRobotGlb();
 
 function deviceModelUri(kind: SimulationDevice['kind']): string | undefined {
   switch (kind) {
@@ -59,6 +80,10 @@ function deviceModelUri(kind: SimulationDevice['kind']): string | undefined {
     case 'quadruped':
     case 'unitree_robot':
       return unitreeGo2Glb;
+    case 'sensor_node':
+      return parrotBebopGlb;
+    case 'wheeled_robot':
+      return wheeledRobotGlbUrl;
     default:
       return undefined;
   }
@@ -107,6 +132,7 @@ export interface WorldSceneProps {
   objects?: WorldObject[];
   devices?: SimulationDevice[];
   weather?: WorldSnapshot['terrain'];
+  wallClockAt?: string;
   showAxes?: boolean;
   hidePrimaryDevice?: boolean;
   tickIntervalMs?: number;
@@ -127,6 +153,7 @@ export interface WorldSceneProps {
   onSelectOverlay?: (selection: SceneOverlaySelection | null) => void;
   onCameraPoseChange?: (pose: WorldSceneCameraPose) => void;
   focusTarget?: WorldSceneFocusTarget | null;
+  cameraControllerRef?: MutableRefObject<WorldSceneCameraController | null>;
 }
 
 interface GeoCenter {
@@ -166,10 +193,23 @@ export function mapDeviceTelemetryPosition(position: SimulationDevice['telemetry
   ];
 }
 
+// Google Photorealistic 3D Tiles 的纹理预烘焙了均匀光照，单靠 Cesium 的太阳
+// 位置不会让贴图随时间变明暗。按当前仿真小时映射出对应日光颜色，强行覆盖纹理。
+function lightColorForHour(hour: number): Cartesian3 {
+  if (hour < 5 || hour >= 20) return new Cartesian3(0.18, 0.2, 0.35);
+  if (hour < 7) return new Cartesian3(1.6, 1.1, 0.8);
+  if (hour < 10) return new Cartesian3(2.6, 2.4, 2.0);
+  if (hour < 14) return new Cartesian3(3.6, 3.5, 3.3);
+  if (hour < 17) return new Cartesian3(2.6, 2.4, 2.0);
+  if (hour < 19) return new Cartesian3(2.0, 1.3, 0.7);
+  return new Cartesian3(0.6, 0.5, 0.7);
+}
+
 function applySceneSettings(
   widget: SceneWidget,
   tileset: Cesium3DTileset | undefined,
   settings: SceneSettings,
+  wallClockAt: string | undefined,
 ) {
   const scene = widget.scene as typeof widget.scene & {
     highDynamicRange?: boolean;
@@ -177,9 +217,25 @@ function applySceneSettings(
   };
 
   scene.shadowMap.enabled = settings.shadows;
+  if (settings.shadows) {
+    // globe: false 导致没有地表接阴影，shadowMap 默认参数对城市级 3D Tiles
+    // 几乎不可见，把暗度/尺寸/距离都调到肉眼能分辨的强度。
+    scene.shadowMap.softShadows = true;
+    scene.shadowMap.darkness = 0.7;
+    scene.shadowMap.maximumDistance = 8000;
+    scene.shadowMap.size = 4096;
+  }
 
   if (tileset) {
     tileset.maximumScreenSpaceError = settings.maxScreenSpaceError;
+    tileset.shadows = settings.shadows ? ShadowMode.ENABLED : ShadowMode.DISABLED;
+    if (settings.shadows) {
+      const date = wallClockAt ? new Date(wallClockAt) : new Date();
+      const hour = Number.isNaN(date.getTime()) ? 12 : date.getHours();
+      tileset.lightColor = lightColorForHour(hour);
+    } else {
+      tileset.lightColor = new Cartesian3(1, 1, 1);
+    }
   }
 
   if (scene.highDynamicRangeSupported) {
@@ -220,7 +276,23 @@ function parseNumber(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function resolveWorldCenter(objects: WorldObject[]): GeoCenter {
+export function resolveWorldCenter(
+  objects: WorldObject[],
+  worldMetadata?: Record<string, string>,
+): GeoCenter {
+  if (worldMetadata) {
+    const metaLat = parseNumber(worldMetadata.center_lat);
+    const metaLon = parseNumber(worldMetadata.center_lon);
+    const metaRadius = parseNumber(worldMetadata.radius_m);
+    if (metaLat !== undefined && metaLon !== undefined) {
+      return {
+        lat: metaLat,
+        lon: metaLon,
+        radiusM: metaRadius ?? FALLBACK_CENTER.radiusM,
+      };
+    }
+  }
+
   const metadata = objects.find((object) => object.properties?.world_metadata === 'true')?.properties ?? {};
   const lat = parseNumber(metadata.center_lat);
   const lon = parseNumber(metadata.center_lon);
@@ -263,10 +335,8 @@ function entityPositionFromGeo(geo: { lon: number; lat: number; height: number }
   return Cartesian3.fromDegrees(geo.lon, geo.lat, geo.height);
 }
 
-function deviceGeoPosition(center: GeoCenter, device: SimulationDevice) {
-  const altitude = device.kind === 'drone'
-    ? Math.max(20, device.telemetry.position[1])
-    : Math.max(1.5, device.telemetry.position[1] * 0.08);
+export function deviceGeoPosition(center: GeoCenter, device: SimulationDevice) {
+  const altitude = Math.max(0, device.telemetry.position[1]);
   return worldOffsetToLonLat(center, mapDeviceTelemetryPosition(device.telemetry.position), altitude);
 }
 
@@ -418,10 +488,28 @@ function cameraGeoFromScenePosition(center: GeoCenter, position: [number, number
 
 export function deviceModelScale(device: Pick<SimulationDevice, 'kind' | 'name'>): number {
   const name = (device.name || '').toLowerCase();
-  if (name.includes('b2')) return 1.55;
-  if (name.includes('matrice 30')) return 1.6;
-  if (name.includes('autel') || name.includes('evo max')) return 1.3;
-  return 1.0;
+  let base: number;
+  switch (device.kind) {
+    case 'drone':
+      base = 0.006;
+      break;
+    case 'sensor_node':
+      base = 0.1;
+      break;
+    case 'wheeled_robot':
+      base = 1.0;
+      break;
+    case 'humanoid':
+    case 'quadruped':
+    case 'unitree_robot':
+    default:
+      base = 1.0;
+      break;
+  }
+  if (name.includes('matrice 30')) return base * 1.6;
+  if (name.includes('autel') || name.includes('evo max')) return base * 1.3;
+  if (name.includes('b2')) return base * 1.55;
+  return base;
 }
 
 export function deviceEyeHeightM(device: Pick<SimulationDevice, 'kind' | 'name'>): number {
@@ -1204,6 +1292,7 @@ export function WorldScene({
   objects = [],
   devices = [],
   weather = { slopeDeg: 0, weather: 'sunny' },
+  wallClockAt,
   showAxes = true,
   hidePrimaryDevice = false,
   tickIntervalMs = 200,
@@ -1224,6 +1313,7 @@ export function WorldScene({
   onSelectOverlay,
   onCameraPoseChange,
   focusTarget,
+  cameraControllerRef,
   humanRoamStart,
   onHumanRoamStartPlace,
   onHumanRoamPoseChange,
@@ -1234,6 +1324,7 @@ export function WorldScene({
   const eventHandlerRef = useRef<ScreenSpaceEventHandler | undefined>(undefined);
   const tilesetRef = useRef<Cesium3DTileset | undefined>(undefined);
   const cameraListenerRef = useRef<(() => void) | undefined>(undefined);
+  const orbitStateRef = useRef<{ center: Cartesian3; range: number } | null>(null);
   const activeToolRef = useRef<ActiveTool>(activeTool);
   const onScenePickRef = useRef<typeof onScenePick>(onScenePick);
   const onSelectOverlayRef = useRef<typeof onSelectOverlay>(onSelectOverlay);
@@ -1258,6 +1349,44 @@ export function WorldScene({
   const resolvedGoogleMapsApiKey = resolveGoogleMapsApiKey(googleMapsApiKey);
   const resolvedCesiumIonToken = resolveCesiumIonToken(cesiumIonToken);
 
+  const [wheeledRobotReady, setWheeledRobotReady] = useState<boolean>(Boolean(wheeledRobotGlbUrl));
+  useEffect(() => {
+    if (wheeledRobotGlbUrl) {
+      if (!wheeledRobotReady) setWheeledRobotReady(true);
+      return;
+    }
+    let cancelled = false;
+    ensureWheeledRobotGlb().then(() => {
+      if (!cancelled) setWheeledRobotReady(true);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [wheeledRobotReady]);
+
+  useEffect(() => {
+    if (!wheeledRobotReady || !wheeledRobotGlbUrl) return;
+    const widget = widgetRef.current;
+    if (!widget || widget.isDestroyed()) return;
+    let mutated = false;
+    for (const device of devices) {
+      if (device.kind !== 'wheeled_robot') continue;
+      const entity = widget.entities.getById(`device-${device.id}`);
+      if (entity && !entity.model) {
+        entity.model = new ModelGraphics({
+          uri: wheeledRobotGlbUrl,
+          scale: deviceModelScale(device),
+          minimumPixelSize: 0,
+          heightReference: HeightReference.CLAMP_TO_GROUND,
+          distanceDisplayCondition: new DistanceDisplayCondition(0, MODEL_NEAR_FAR_M),
+          runAnimations: true,
+        });
+        mutated = true;
+      }
+    }
+    if (mutated) widget.scene.requestRender();
+  }, [wheeledRobotReady, devices]);
+
   useEffect(() => {
     activeToolRef.current = activeTool;
   }, [activeTool]);
@@ -1273,6 +1402,76 @@ export function WorldScene({
   useEffect(() => {
     onCameraPoseChangeRef.current = onCameraPoseChange;
   }, [onCameraPoseChange]);
+
+  useEffect(() => {
+    if (!cameraControllerRef) {
+      return undefined;
+    }
+    const controller: WorldSceneCameraController = {
+      beginOrbit: () => {
+        const widget = widgetRef.current;
+        if (!widget || widget.isDestroyed()) {
+          return false;
+        }
+        const canvas = widget.scene.canvas;
+        const cx = canvas.clientWidth / 2;
+        const cy = canvas.clientHeight / 2;
+        const screenCenter = new Cartesian2(cx, cy);
+        let target: Cartesian3 | undefined;
+        const ray = widget.camera.getPickRay(screenCenter);
+        if (ray) {
+          target = widget.scene.globe?.pick(ray, widget.scene) ?? undefined;
+        }
+        if (!target && widget.scene.globe) {
+          const ellipsoidPick = widget.camera.pickEllipsoid(screenCenter, widget.scene.globe.ellipsoid);
+          if (ellipsoidPick) {
+            target = ellipsoidPick;
+          }
+        }
+        if (!target) {
+          const direction = widget.camera.directionWC;
+          const position = widget.camera.positionWC;
+          target = Cartesian3.add(
+            position,
+            Cartesian3.multiplyByScalar(direction, 500, new Cartesian3()),
+            new Cartesian3(),
+          );
+        }
+        const range = Cartesian3.distance(widget.camera.positionWC, target);
+        orbitStateRef.current = { center: target, range };
+        return true;
+      },
+      setOrbit: (headingDeg, pitchDeg) => {
+        const widget = widgetRef.current;
+        const orbit = orbitStateRef.current;
+        if (!widget || widget.isDestroyed() || !orbit) {
+          return;
+        }
+        widget.camera.lookAt(
+          orbit.center,
+          new HeadingPitchRange(
+            CesiumMath.toRadians(headingDeg),
+            CesiumMath.toRadians(pitchDeg),
+            orbit.range,
+          ),
+        );
+      },
+      endOrbit: () => {
+        orbitStateRef.current = null;
+        const widget = widgetRef.current;
+        if (!widget || widget.isDestroyed()) {
+          return;
+        }
+        widget.camera.lookAtTransform(Matrix4.IDENTITY);
+      },
+    };
+    cameraControllerRef.current = controller;
+    return () => {
+      if (cameraControllerRef.current === controller) {
+        cameraControllerRef.current = null;
+      }
+    };
+  }, [cameraControllerRef]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -1732,8 +1931,24 @@ export function WorldScene({
     if (!widget || widget.isDestroyed() || !sceneSettings) {
       return;
     }
-    applySceneSettings(widget, tilesetRef.current, sceneSettings);
-  }, [sceneSettings, tilesetReady]);
+    applySceneSettings(widget, tilesetRef.current, sceneSettings, wallClockAt);
+    widget.scene.requestRender();
+  }, [sceneSettings, tilesetReady, wallClockAt]);
+
+  // Cesium 默认用 JulianDate.now() 计算太阳位置，会出现"晚上跑应用就没投影"的问题。
+  // 把仿真时钟同步过去，让阴影方向跟仿真时间走，不跟系统真实时间走。
+  useEffect(() => {
+    const widget = widgetRef.current;
+    if (!widget || widget.isDestroyed() || !wallClockAt) {
+      return;
+    }
+    const date = new Date(wallClockAt);
+    if (Number.isNaN(date.getTime())) {
+      return;
+    }
+    widget.clock.currentTime = JulianDate.fromDate(date);
+    widget.scene.requestRender();
+  }, [wallClockAt, tilesetReady]);
 
   useEffect(() => {
     const widget = widgetRef.current;
@@ -1953,7 +2168,7 @@ export function WorldScene({
           {selectedEntityName}
         </div>
       ) : null}
-      {onHumanRoamStartPlace ? (
+      {onHumanRoamStartPlace && cameraMode === 'human_roam' ? (
         <PegmanDraggable
           onDrop={(clientX, clientY) => {
             const widget = widgetRef.current;
@@ -1975,25 +2190,7 @@ export function WorldScene({
       ) : null}
       {sceneSettings?.showPerformance ? <PerformanceHud /> : null}
       {cameraMode === 'human_roam' && humanRoamStart ? (
-        <div
-          style={{
-            position: 'absolute',
-            left: '50%',
-            bottom: 14,
-            zIndex: 6,
-            transform: 'translateX(-50%)',
-            border: '1px solid #d7e3fb',
-            borderRadius: 999,
-            background: 'rgba(255, 255, 255, 0.92)',
-            padding: '6px 14px',
-            color: '#1a1f3c',
-            fontSize: 12,
-            fontWeight: 600,
-            whiteSpace: 'nowrap',
-            boxShadow: '0 6px 18px rgba(11, 31, 84, 0.12)',
-            pointerEvents: 'none',
-          }}
-        >
+        <div className="cesium-world-scene-hroam-hint">
           WSAD 行走 · Q/E 升降 · Space 跳 · Shift 跑 · 按住鼠标拖拽看四周
         </div>
       ) : null}
@@ -2060,24 +2257,7 @@ function PegmanDraggable({ onDrop }: PegmanDraggableProps) {
       <button
         type="button"
         title="拖拽小人到地图任意位置进入街景漫游"
-        style={{
-          position: 'absolute',
-          right: 22,
-          bottom: 220,
-          zIndex: 6,
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: 44,
-          height: 56,
-          border: '1px solid #d7e3fb',
-          borderRadius: 10,
-          background: 'rgba(255, 255, 255, 0.95)',
-          boxShadow: '0 8px 22px rgba(11, 31, 84, 0.18)',
-          cursor: dragging ? 'grabbing' : 'grab',
-          touchAction: 'none',
-          padding: 0,
-        }}
+        className={`cesium-world-scene-pegman ${dragging ? 'is-dragging' : ''}`}
         onPointerDown={(event) => {
           event.preventDefault();
           setPointer({ x: event.clientX, y: event.clientY });
@@ -2088,15 +2268,8 @@ function PegmanDraggable({ onDrop }: PegmanDraggableProps) {
       </button>
       {dragging && pointer ? (
         <div
-          style={{
-            position: 'fixed',
-            left: pointer.x,
-            top: pointer.y,
-            zIndex: 9999,
-            pointerEvents: 'none',
-            transform: 'translate(-50%, -90%)',
-            filter: 'drop-shadow(0 6px 10px rgba(0, 0, 0, 0.3))',
-          }}
+          className="cesium-world-scene-pegman-ghost"
+          style={{ left: pointer.x, top: pointer.y }}
         >
           <PegmanGlyph />
         </div>

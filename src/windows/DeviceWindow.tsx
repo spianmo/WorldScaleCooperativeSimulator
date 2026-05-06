@@ -1,10 +1,11 @@
-import { FiArrowLeft, FiMapPin, FiRotateCcw } from 'react-icons/fi';
+import { FiArrowLeft, FiMapPin, FiRotateCcw, FiX } from 'react-icons/fi';
 import { useTranslation } from 'react-i18next';
-import { Toolbar } from '../components/Toolbar';
 import { WorldScene, mapDeviceTelemetryPosition } from '../components/WorldScene';
 import { TelemetryChart, type TelemetrySeries } from '../components/TelemetryChart';
 import { TerminalLog, type TerminalEntry } from '../components/TerminalLog';
 import { useSimulation } from '../state';
+import { closeDialogWindow, startDialogWindowDrag } from '../utils';
+import terminalLogoMarkUrl from '../../assets/design/logo.png';
 
 export interface DeviceWindowProps {
   deviceId: string;
@@ -118,108 +119,157 @@ export function DeviceWindow({
     cameraPosition[2] + forward[2] * 5.2,
   ] as [number, number, number];
 
+  const summaryRows: Array<{ label: string; value: string }> = [
+    { label: t('deviceWindow.id'), value: deviceId || t('deviceWindow.unknownId') },
+    { label: t('deviceWindow.status'), value: device?.status ?? t('common.unknown') },
+    { label: t('deviceWindow.battery'), value: `${device?.telemetry.batteryPercent ?? 0}%` },
+    {
+      label: t('deviceWindow.position'),
+      value: device ? device.telemetry.position.map((value) => value.toFixed(1)).join(', ') : t('common.unknown'),
+    },
+    { label: t('deviceWindow.speed'), value: device ? `${device.telemetry.speedMps.toFixed(1)} m/s` : t('common.unknown') },
+    { label: t('deviceWindow.power'), value: device ? `${Math.round(device.telemetry.powerW)} W` : t('common.unknown') },
+    { label: t('deviceWindow.task'), value: device?.currentTaskId ?? t('deviceWindow.idle') },
+    { label: t('deviceWindow.slopeCapability'), value: device ? `${device.physicalProfile.maxSlopeDeg}°` : t('common.unknown') },
+    {
+      label: t('deviceWindow.workHeight'),
+      value: device ? `${device.physicalProfile.minWorkAltitudeM}-${device.physicalProfile.maxWorkAltitudeM}m` : t('common.unknown'),
+    },
+    {
+      label: t('deviceWindow.material'),
+      value: device ? device.physicalProfile.supportedMaterials.join('/') : t('common.unknown'),
+    },
+    {
+      label: t('deviceWindow.jointAngles'),
+      value: device ? device.telemetry.jointAnglesDeg.slice(0, 6).join(' / ') : t('common.unknown'),
+    },
+    {
+      label: t('deviceWindow.quaternion'),
+      value: device?.telemetry.jointQuaternion?.map((value) => value.toFixed(2)).join(' / ') ?? t('common.unknown'),
+    },
+  ];
+
   return (
-    <div className="sim-page sim-page-grid">
-      <Toolbar
-        title={t('deviceWindow.title', { name: resolvedDeviceName, id: deviceId || t('deviceWindow.unknownId') })}
-        subtitle={t('deviceWindow.subtitle', { status: device?.status ?? t('common.unknown') })}
-        actions={[
-          { id: 'back', icon: <FiArrowLeft />, label: t('common.back'), onClick: () => window.history.back() },
-          { id: 'pin', icon: <FiMapPin />, label: t('deviceWindow.pin'), onClick: () => appendLog({ level: 'info', scope: 'device', message: t('deviceWindow.pinLog', { name: resolvedDeviceName }), details: deviceId }) },
-        ]}
+    <div className="terminal-detail-page">
+      <section
+        className="terminal-detail-shell"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="device-window-title"
       >
-        <span className="sim-chip">DeviceWindow</span>
-        <span className="sim-chip">Cesium 3D Tiles</span>
-        <span className="sim-chip">ID: {deviceId}</span>
-      </Toolbar>
+        <header
+          className="terminal-detail-header"
+          onMouseDown={(event) => {
+            if (event.button === 0 && event.target === event.currentTarget) {
+              startDialogWindowDrag();
+            }
+          }}
+        >
+          <div className="terminal-detail-brand" onMouseDown={startDialogWindowDrag}>
+            <img src={terminalLogoMarkUrl} alt="" />
+            <span className="brand-wordmark">
+              <span className="brand-wordmark-prefix">Terminal</span>
+              <span className="brand-wordmark-suffix">Link</span>
+            </span>
+          </div>
+          <div className="terminal-detail-title-block" onMouseDown={startDialogWindowDrag}>
+            <h1 id="device-window-title">
+              {t('deviceWindow.title', { name: resolvedDeviceName, id: deviceId || t('deviceWindow.unknownId') })}
+            </h1>
+            <p>{t('deviceWindow.subtitle', { status: device?.status ?? t('common.unknown') })}</p>
+          </div>
+          <div className="terminal-detail-chip-row">
+            <span className="terminal-detail-chip">DeviceWindow</span>
+            <span className="terminal-detail-chip">Cesium 3D Tiles</span>
+            <span className="terminal-detail-chip">ID: {deviceId || t('deviceWindow.unknownId')}</span>
+          </div>
+          <div className="terminal-detail-actions">
+            <button
+              type="button"
+              className="terminal-detail-action"
+              onClick={() => window.history.back()}
+            >
+              <FiArrowLeft />
+              {t('common.back')}
+            </button>
+            <button
+              type="button"
+              className="terminal-detail-action terminal-detail-action-primary"
+              onClick={() =>
+                appendLog({
+                  level: 'info',
+                  scope: 'device',
+                  message: t('deviceWindow.pinLog', { name: resolvedDeviceName }),
+                  details: deviceId,
+                })
+              }
+            >
+              <FiMapPin />
+              {t('deviceWindow.pin')}
+            </button>
+          </div>
+          <button
+            type="button"
+            className="terminal-detail-close"
+            aria-label={t('common.close')}
+            onClick={() => closeDialogWindow()}
+          >
+            <FiX />
+          </button>
+        </header>
 
-      <div
-        className="sim-responsive-grid sim-device-layout grid grid-cols-[minmax(0,1.35fr)_minmax(340px,0.9fr)] items-stretch gap-4"
-      >
-        <div className="sim-window-column grid-rows-[minmax(0,1fr)_240px]">
-          <WorldScene
-            deviceName={resolvedDeviceName}
-            deviceKind={device?.kind}
-            devicePosition={sceneDevicePosition}
-            deviceRotation={deviceRotation}
-            cameraPosition={cameraPosition}
-            cameraTarget={cameraTarget}
-            cameraMode="first_person"
-            minHeight="100%"
-            objects={state.world.objects}
-            devices={state.devices.filter((item) => item.id !== deviceId)}
-            weather={state.world.terrain}
-            showAxes={state.world.coordinateSystemVisible}
-            hidePrimaryDevice
-            tickIntervalMs={state.settings.tickIntervalMs}
-            googleMapsApiKey={state.settings.maps.googleMaps.apiKey}
-            cesiumIonToken={state.settings.maps.cesiumIon.token}
-          />
-          <TelemetryChart title={t('deviceWindow.telemetryTitle')} subtitle={t('deviceWindow.telemetrySubtitle')} unit="%" targetValue={75} series={resolvedTelemetry} />
-        </div>
+        <main className="terminal-detail-body" data-cols="2-wide">
+          <div className="terminal-detail-panel-column" data-rows="split-tall-bottom">
+            <WorldScene
+              deviceName={resolvedDeviceName}
+              deviceKind={device?.kind}
+              devicePosition={sceneDevicePosition}
+              deviceRotation={deviceRotation}
+              cameraPosition={cameraPosition}
+              cameraTarget={cameraTarget}
+              cameraMode="first_person"
+              minHeight="100%"
+              objects={state.world.objects}
+              devices={state.devices.filter((item) => item.id !== deviceId)}
+              weather={state.world.terrain}
+              showAxes={state.world.coordinateSystemVisible}
+              hidePrimaryDevice
+              tickIntervalMs={state.settings.tickIntervalMs}
+              googleMapsApiKey={state.settings.maps.googleMaps.apiKey}
+              cesiumIonToken={state.settings.maps.cesiumIon.token}
+            />
+            <TelemetryChart
+              title={t('deviceWindow.telemetryTitle')}
+              subtitle={t('deviceWindow.telemetrySubtitle')}
+              unit="%"
+              targetValue={75}
+              series={resolvedTelemetry}
+            />
+          </div>
 
-        <div className="sim-window-column grid-rows-[minmax(0,1fr)_280px]">
-          <section className="sim-panel sim-panel-scroll">
-            <div className="sim-section-title">
-              <FiRotateCcw />
-              <span>{t('deviceWindow.summary')}</span>
-            </div>
+          <div className="terminal-detail-panel-column" data-rows="split-bottom">
+            <section className="terminal-detail-panel">
+              <div className="terminal-detail-section-header">
+                <h2>
+                  <FiRotateCcw />
+                  <span>{t('deviceWindow.summary')}</span>
+                </h2>
+              </div>
 
-            <div className="sim-scroll-list grid gap-2.5">
-              <div className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                <span className="text-[13px] text-sim-muted">{t('deviceWindow.id')}</span>
-                <strong>{deviceId}</strong>
+              <div className="terminal-detail-panel-body">
+                {summaryRows.map((row) => (
+                  <div key={row.label} className="terminal-detail-row">
+                    <em>{row.label}</em>
+                    <strong>{row.value}</strong>
+                  </div>
+                ))}
               </div>
-              <div className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                <span className="text-[13px] text-sim-muted">{t('deviceWindow.status')}</span>
-                <strong>{device?.status ?? t('common.unknown')}</strong>
-              </div>
-              <div className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                <span className="text-[13px] text-sim-muted">{t('deviceWindow.battery')}</span>
-                <strong>{device?.telemetry.batteryPercent ?? 0}%</strong>
-              </div>
-              <div className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                <span className="text-[13px] text-sim-muted">{t('deviceWindow.position')}</span>
-                <strong>{device ? device.telemetry.position.map((value) => value.toFixed(1)).join(', ') : t('common.unknown')}</strong>
-              </div>
-              <div className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                <span className="text-[13px] text-sim-muted">{t('deviceWindow.speed')}</span>
-                <strong>{device ? `${device.telemetry.speedMps.toFixed(1)} m/s` : t('common.unknown')}</strong>
-              </div>
-              <div className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                <span className="text-[13px] text-sim-muted">{t('deviceWindow.power')}</span>
-                <strong>{device ? `${Math.round(device.telemetry.powerW)} W` : t('common.unknown')}</strong>
-              </div>
-              <div className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                <span className="text-[13px] text-sim-muted">{t('deviceWindow.task')}</span>
-                <strong>{device?.currentTaskId ?? t('deviceWindow.idle')}</strong>
-              </div>
-              <div className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                <span className="text-[13px] text-sim-muted">{t('deviceWindow.slopeCapability')}</span>
-                <strong>{device ? `${device.physicalProfile.maxSlopeDeg}°` : t('common.unknown')}</strong>
-              </div>
-              <div className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                <span className="text-[13px] text-sim-muted">{t('deviceWindow.workHeight')}</span>
-                <strong>{device ? `${device.physicalProfile.minWorkAltitudeM}-${device.physicalProfile.maxWorkAltitudeM}m` : t('common.unknown')}</strong>
-              </div>
-              <div className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                <span className="text-[13px] text-sim-muted">{t('deviceWindow.material')}</span>
-                <strong>{device ? device.physicalProfile.supportedMaterials.join('/') : t('common.unknown')}</strong>
-              </div>
-              <div className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                <span className="text-[13px] text-sim-muted">{t('deviceWindow.jointAngles')}</span>
-                <strong>{device ? device.telemetry.jointAnglesDeg.slice(0, 6).join(' / ') : t('common.unknown')}</strong>
-              </div>
-              <div className="sim-row flex items-center justify-between gap-3 px-3 py-2.5">
-                <span className="text-[13px] text-sim-muted">{t('deviceWindow.quaternion')}</span>
-                <strong>{device?.telemetry.jointQuaternion?.map((value) => value.toFixed(2)).join(' / ') ?? t('common.unknown')}</strong>
-              </div>
-            </div>
-          </section>
+            </section>
 
-          <TerminalLog title={t('deviceWindow.logTitle')} entries={resolvedLogs} />
-        </div>
-      </div>
+            <TerminalLog title={t('deviceWindow.logTitle')} entries={resolvedLogs} />
+          </div>
+        </main>
+      </section>
     </div>
   );
 }

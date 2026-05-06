@@ -992,8 +992,39 @@ pub struct GenerateWorldInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UpdateWorldSettingsInput {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub street_address: Option<String>,
+    pub district: Option<String>,
+    pub center_lat: Option<f64>,
+    pub center_lon: Option<f64>,
+    pub radius_m: Option<f32>,
+    pub data_source: Option<String>,
+    pub weather: Option<String>,
+    pub wind_speed_mps: Option<f32>,
+    pub weather_strength_pct: Option<u8>,
+    pub light_hour: Option<f32>,
+    pub world_time: Option<String>,
+    pub time_speed: Option<f32>,
+    pub terrain_source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RegisterDeviceInput {
     pub name: String,
+    pub kind: Option<DeviceKind>,
+    pub battery: Option<f32>,
+    pub battery_capacity: Option<f32>,
+    pub position: Option<Vector3>,
+    pub physical_profile: Option<DevicePhysicalProfile>,
+    pub capabilities: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UpdateDeviceInput {
+    pub device_id: Uuid,
+    pub name: Option<String>,
     pub kind: Option<DeviceKind>,
     pub battery: Option<f32>,
     pub battery_capacity: Option<f32>,
@@ -1031,6 +1062,12 @@ pub struct WorldSnapshotRecord {
     pub snapshot_name: String,
     pub path: String,
     pub modified_at: String,
+    #[serde(default)]
+    pub world_name: Option<String>,
+    #[serde(default)]
+    pub world_created_at: Option<String>,
+    #[serde(default)]
+    pub world_updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -13,21 +13,24 @@ import type {
   WorldSnapshotRecord,
   WorldSnapshot,
 } from '../types';
-import type { GenerateWorldInput } from '../api';
+import type { GenerateWorldInput, UpdateWorldSettingsInput } from '../api';
 import { createEmptySimulationState } from '../types';
 import {
+  deleteWorldSnapshot as invokeDeleteWorldSnapshot,
   generateWorld as invokeGenerateWorld,
   listWorldSnapshots as invokeListWorldSnapshots,
   loadSimulationState,
   openWorldSnapshot as invokeOpenWorldSnapshot,
   registerDevice as invokeRegisterDevice,
   removeDevice as invokeRemoveDevice,
+  updateDevice as invokeUpdateDevice,
   saveWorldSnapshot as invokeSaveWorldSnapshot,
   saveSimulationState,
   submitGoal as invokeSubmitGoal,
   tickSimulation as invokeTickSimulation,
   updateAppSettings as invokeUpdateAppSettings,
   updatePhysicalRules as invokeUpdatePhysicalRules,
+  updateWorldSettings as invokeUpdateWorldSettings,
 } from '../api';
 import { openSimulatorWindow, type OpenSimulatorWindowOptions } from '../utils';
 import { setAppLocale, tx } from '../i18n';
@@ -56,16 +59,19 @@ export interface SimulationProviderValue {
   setWorld: (world: WorldSnapshot) => void;
   registerDevice: (device: SimulationDevice) => void;
   removeDevice: (deviceId: string) => void;
+  updateDevice: (device: SimulationDevice) => void;
   submitGoal: (goal: SimulationGoal) => void;
   appendLog: (logEntry: Omit<SimulationLogEntry, 'id' | 'timestamp'>) => void;
   setWindows: (windows: SimulationWindowRecord[]) => void;
   openWindow: (options: OpenSimulatorWindowOptions) => Promise<unknown>;
   generateWorld: (input?: GenerateWorldInput['input']) => Promise<void>;
+  updateWorldSettings: (input: UpdateWorldSettingsInput['input']) => Promise<void>;
   tickSimulation: (steps?: number) => Promise<void>;
   updatePhysicalRules: (rules: Partial<SimulationState['physicalRules']>) => Promise<void>;
   saveWorldSnapshot: (snapshotName?: string) => Promise<{ path: string }>;
   listWorldSnapshots: () => Promise<WorldSnapshotRecord[]>;
   openWorldSnapshot: (snapshotName: string) => Promise<void>;
+  deleteWorldSnapshot: (snapshotName: string) => Promise<WorldSnapshotRecord[]>;
 }
 
 const SimulationContext = createContext<SimulationProviderValue | null>(null);
@@ -393,6 +399,12 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
       .catch(() => commitState((currentState) => removeDeviceFromState(currentState, deviceId)));
   };
 
+  const updateDevice = (device: SimulationDevice) => {
+    void invokeUpdateDevice(device)
+      .then(updateState)
+      .catch(() => commitState((currentState) => appendDeviceToState(currentState, device)));
+  };
+
   const submitGoal = (goal: SimulationGoal) => {
     void invokeSubmitGoal(goal)
       .then(updateState)
@@ -463,6 +475,12 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
     updateState(generated);
   };
 
+  const updateWorldSettings = async (input: UpdateWorldSettingsInput['input']) => {
+    const next = await invokeUpdateWorldSettings(input);
+    // 编辑当前世界保留设备/任务/目标，因此不重置 deviceGroups。
+    updateState(next);
+  };
+
   const tickSimulation = async (steps = 1) => {
     const nextState = await invokeTickSimulation(steps);
     updateState(nextState);
@@ -483,7 +501,13 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
 
   const openWorldSnapshot = async (snapshotName: string) => {
     const nextState = await invokeOpenWorldSnapshot(snapshotName);
+    // 历史世界的设备 ID 与本地分组无对应关系，沿用 generateWorld 的清理策略。
+    clearDeviceGroups();
     updateState(nextState);
+  };
+
+  const deleteWorldSnapshot = async (snapshotName: string) => {
+    return invokeDeleteWorldSnapshot(snapshotName);
   };
 
   const value: SimulationProviderValue = {
@@ -500,16 +524,19 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
     setWorld,
     registerDevice,
     removeDevice,
+    updateDevice,
     submitGoal,
     appendLog,
     setWindows,
     openWindow: openSimulatorWindow,
     generateWorld,
+    updateWorldSettings,
     tickSimulation,
     updatePhysicalRules,
     saveWorldSnapshot,
     listWorldSnapshots,
     openWorldSnapshot,
+    deleteWorldSnapshot,
   };
 
   if (!hydrated) {
@@ -558,16 +585,19 @@ export function useSimulationActions() {
     setWorld,
     registerDevice,
     removeDevice,
+    updateDevice,
     submitGoal,
     appendLog,
     setWindows,
     openWindow,
     generateWorld,
+    updateWorldSettings,
     tickSimulation,
     updatePhysicalRules,
     saveWorldSnapshot,
     listWorldSnapshots,
     openWorldSnapshot,
+    deleteWorldSnapshot,
   } = useSimulation();
 
   return {
@@ -580,15 +610,18 @@ export function useSimulationActions() {
     setWorld,
     registerDevice,
     removeDevice,
+    updateDevice,
     submitGoal,
     appendLog,
     setWindows,
     openWindow,
     generateWorld,
+    updateWorldSettings,
     tickSimulation,
     updatePhysicalRules,
     saveWorldSnapshot,
     listWorldSnapshots,
     openWorldSnapshot,
+    deleteWorldSnapshot,
   };
 }

@@ -1,9 +1,11 @@
-import { useMemo } from 'react';
+import { useMemo, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { WorldSceneCameraController } from './sceneTypes';
 
 export interface CoordinateAxesProps {
   headingDeg: number;
   pitchDeg: number;
+  controllerRef?: MutableRefObject<WorldSceneCameraController | null>;
 }
 
 interface ProjectedAxis {
@@ -16,6 +18,17 @@ interface ProjectedAxis {
 }
 
 const AXIS_LENGTH = 36;
+const ROTATE_SENSITIVITY_DEG_PER_PX = 0.6;
+const PITCH_MIN_DEG = -89;
+const PITCH_MAX_DEG = 89;
+
+interface DragState {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  startHeading: number;
+  startPitch: number;
+}
 
 function project(axis: ProjectedAxis, headingDeg: number, pitchDeg: number) {
   // Heading rotates around screen vertical (Z-up world), pitch tilts forward.
@@ -43,9 +56,17 @@ function project(axis: ProjectedAxis, headingDeg: number, pitchDeg: number) {
   };
 }
 
-export function CoordinateAxes({ headingDeg, pitchDeg }: CoordinateAxesProps) {
+function clampPitch(value: number) {
+  return Math.max(PITCH_MIN_DEG, Math.min(PITCH_MAX_DEG, value));
+}
+
+export function CoordinateAxes({ headingDeg, pitchDeg, controllerRef }: CoordinateAxesProps) {
   const { t } = useTranslation();
   const label = t('worldScene.coordSystemAria');
+
+  const dragRef = useRef<DragState | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const interactive = Boolean(controllerRef);
 
   const axes = useMemo<ProjectedAxis[]>(
     () => [
@@ -63,8 +84,68 @@ export function CoordinateAxes({ headingDeg, pitchDeg }: CoordinateAxesProps) {
   const cx = 48;
   const cy = 48;
 
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const controller = controllerRef?.current;
+    if (!controller) {
+      return;
+    }
+    if (event.pointerType === 'mouse' && event.button !== 0) {
+      return;
+    }
+    if (!controller.beginOrbit()) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startHeading: headingDeg,
+      startPitch: pitchDeg,
+    };
+    setDragging(true);
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || event.pointerId !== drag.pointerId) {
+      return;
+    }
+    const controller = controllerRef?.current;
+    if (!controller) {
+      return;
+    }
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    const newHeading = drag.startHeading + dx * ROTATE_SENSITIVITY_DEG_PER_PX;
+    const newPitch = clampPitch(drag.startPitch + dy * ROTATE_SENSITIVITY_DEG_PER_PX);
+    controller.setOrbit(newHeading, newPitch);
+  };
+
+  const releaseDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || event.pointerId !== drag.pointerId) {
+      return;
+    }
+    if (event.currentTarget.hasPointerCapture(drag.pointerId)) {
+      event.currentTarget.releasePointerCapture(drag.pointerId);
+    }
+    dragRef.current = null;
+    setDragging(false);
+    controllerRef?.current?.endOrbit();
+  };
+
   return (
-    <div className="scene-axes" aria-label={label}>
+    <div
+      className={`scene-axes${interactive ? ' scene-axes--interactive' : ''}${dragging ? ' scene-axes--dragging' : ''}`}
+      aria-label={label}
+      role={interactive ? 'slider' : undefined}
+      onPointerDown={interactive ? handlePointerDown : undefined}
+      onPointerMove={interactive ? handlePointerMove : undefined}
+      onPointerUp={interactive ? releaseDrag : undefined}
+      onPointerCancel={interactive ? releaseDrag : undefined}
+    >
       <svg viewBox="0 0 96 96" aria-hidden="true">
         {projected.map(({ axis, sx, sy }) => (
           <g key={axis.id}>
