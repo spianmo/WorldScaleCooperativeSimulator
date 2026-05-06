@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FiCrosshair, FiLayers, FiMapPin, FiNavigation, FiShare2, FiTarget, FiBox } from 'react-icons/fi';
 import { TbRulerMeasure } from 'react-icons/tb';
@@ -61,6 +61,23 @@ export function SceneRail({
   measureActive,
 }: SceneRailProps) {
   const { t } = useTranslation();
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!activePanel) {
+      return undefined;
+    }
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (containerRef.current && containerRef.current.contains(target)) {
+        return;
+      }
+      onTogglePanel(activePanel);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [activePanel, onTogglePanel]);
 
   const goalTaskIndex = useMemo(() => {
     const map = new Map<string, SimulationTask[]>();
@@ -76,7 +93,12 @@ export function SceneRail({
   const labelFor = (id: RailPanelId) => t(`worldWindowExtra.scene.rail.${id}`);
 
   return (
-    <div className="scene-rail" role="toolbar" aria-label={t('worldWindowExtra.scene.rail.aria')}>
+    <div
+      ref={containerRef}
+      className="scene-rail"
+      role="toolbar"
+      aria-label={t('worldWindowExtra.scene.rail.aria')}
+    >
       {RAIL_BUTTONS.map((button, index) => {
         const isActive = activePanel === button.id || (button.id === 'measure' && measureActive);
         return (

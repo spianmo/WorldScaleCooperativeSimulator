@@ -1,3 +1,4 @@
+import { useEffect, useRef, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FiX } from 'react-icons/fi';
 import type { SceneSettings } from './sceneTypes';
@@ -7,6 +8,7 @@ export interface SceneSettingsPanelProps {
   settings: SceneSettings;
   onClose: () => void;
   onChange: (patch: Partial<SceneSettings>) => void;
+  triggerRef?: RefObject<HTMLElement | null>;
 }
 
 interface ToggleRow {
@@ -24,14 +26,40 @@ const TOGGLES: ToggleRow[] = [
   { key: 'showPerformance', group: 'performance' },
 ];
 
-export function SceneSettingsPanel({ open, settings, onClose, onChange }: SceneSettingsPanelProps) {
+export function SceneSettingsPanel({ open, settings, onClose, onChange, triggerRef }: SceneSettingsPanelProps) {
   const { t } = useTranslation();
+  const panelRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (panelRef.current && panelRef.current.contains(target)) {
+        return;
+      }
+      if (triggerRef?.current && triggerRef.current.contains(target)) {
+        return;
+      }
+      onClose();
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [open, onClose, triggerRef]);
+
   if (!open) {
     return null;
   }
 
   return (
-    <aside className="scene-settings-panel" aria-label={t('worldWindowExtra.scene.settings.aria')} role="dialog">
+    <aside
+      ref={panelRef}
+      className="scene-settings-panel"
+      aria-label={t('worldWindowExtra.scene.settings.aria')}
+      role="dialog"
+    >
       <header>
         <strong>{t('worldWindowExtra.scene.configure3D')}</strong>
         <button type="button" aria-label={t('common.close')} onClick={onClose}>

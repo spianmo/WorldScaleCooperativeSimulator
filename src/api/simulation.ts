@@ -42,6 +42,7 @@ export const SIMULATION_COMMANDS = {
 export interface TileCacheConfig {
   max_bytes: number;
   ttl_days: number;
+  proxy_url?: string;
 }
 
 export interface TileCacheStats {

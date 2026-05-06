@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Compass } from './Compass';
 import { CoordinateAxes } from './CoordinateAxes';
 import { SceneEditToolbar } from './SceneEditToolbar';
@@ -34,6 +34,7 @@ export function SceneOverlay({
 }: SceneOverlayProps) {
   const [activePanel, setActivePanel] = useState<RailPanelId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const togglePanel = (panel: RailPanelId) => {
     setActivePanel((prev) => (prev === panel ? null : panel));
@@ -108,6 +109,7 @@ export function SceneOverlay({
         onClearSelection={() => tools.selectOverlay(null)}
         onOpenSettings={() => setSettingsOpen((open) => !open)}
         settingsOpen={settingsOpen}
+        settingsButtonRef={settingsButtonRef}
       />
 
       <SceneSettingsPanel
@@ -115,6 +117,7 @@ export function SceneOverlay({
         settings={tools.settings}
         onChange={tools.updateSettings}
         onClose={() => setSettingsOpen(false)}
+        triggerRef={settingsButtonRef}
       />
     </>
   );

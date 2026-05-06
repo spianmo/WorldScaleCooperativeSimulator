@@ -4622,7 +4622,7 @@
   .cesium-world-scene-perfhud {
     position: absolute;
     left: 14px;
-    top: 14px;
+    bottom: 14px;
     z-index: 7;
     display: inline-flex;
     align-items: center;
@@ -5139,7 +5139,7 @@
     display: inline-flex;
     align-items: stretch;
     gap: 12px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: center;
     pointer-events: none;
   }
@@ -5171,6 +5171,7 @@
     align-items: center;
     gap: 6px;
     cursor: pointer;
+    white-space: nowrap;
     transition: background-color 120ms ease, color 120ms ease;
   }
 
@@ -5202,6 +5203,7 @@
     align-items: center;
     gap: 6px;
     cursor: pointer;
+    white-space: nowrap;
     box-shadow: 0 10px 22px rgba(11, 31, 84, 0.16);
   }
 

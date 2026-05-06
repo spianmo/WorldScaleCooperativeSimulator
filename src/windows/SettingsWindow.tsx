@@ -10,6 +10,7 @@ import {
   FiMoon,
   FiRotateCcw,
   FiSave,
+  FiShare2,
   FiTrash2,
   FiX,
 } from 'react-icons/fi';
@@ -134,6 +135,12 @@ const cacheActionRowStyle: React.CSSProperties = {
   justifyContent: 'flex-end',
 };
 
+const proxyInputStyle: React.CSSProperties = {
+  width: 360,
+  maxWidth: '100%',
+  fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+};
+
 interface SettingItem {
   label: string;
   value: string;
@@ -157,6 +164,10 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
   const [cacheBusy, setCacheBusy] = useState(false);
   const [maxBytesGbInput, setMaxBytesGbInput] = useState<string>('5');
   const [ttlDaysInput, setTtlDaysInput] = useState<string>('30');
+  const [savedMaxBytesGb, setSavedMaxBytesGb] = useState<string>('5');
+  const [savedTtlDays, setSavedTtlDays] = useState<string>('30');
+  const [proxyUrlInput, setProxyUrlInput] = useState<string>('');
+  const [savedProxyUrl, setSavedProxyUrl] = useState<string>('');
 
   useEffect(() => {
     let active = true;
@@ -164,8 +175,15 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
       .then(([stats, config]) => {
         if (!active) return;
         setCacheStats(stats);
-        setMaxBytesGbInput((config.max_bytes / 1024 ** 3).toFixed(2));
-        setTtlDaysInput(String(config.ttl_days));
+        const gb = (config.max_bytes / 1024 ** 3).toFixed(2);
+        const ttl = String(config.ttl_days);
+        setMaxBytesGbInput(gb);
+        setTtlDaysInput(ttl);
+        setSavedMaxBytesGb(gb);
+        setSavedTtlDays(ttl);
+        const proxy = config.proxy_url ?? '';
+        setProxyUrlInput(proxy);
+        setSavedProxyUrl(proxy);
       })
       .catch(() => undefined);
     return () => {
@@ -198,28 +216,9 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
       .finally(() => setCacheBusy(false));
   };
 
-  const handleApplyCacheLimits = () => {
-    if (cacheBusy) return;
-    const parsedGb = Number.parseFloat(maxBytesGbInput);
-    const parsedTtl = Number.parseInt(ttlDaysInput, 10);
-    if (!Number.isFinite(parsedGb) || parsedGb <= 0 || !Number.isFinite(parsedTtl) || parsedTtl < 0) {
-      setStatusMessage(t('settingsWindow.cache.invalidInput'));
-      return;
-    }
-    setCacheBusy(true);
-    void setTileCacheConfig({
-      max_bytes: Math.round(parsedGb * 1024 ** 3),
-      ttl_days: parsedTtl,
-    })
-      .then((stats) => {
-        setCacheStats(stats);
-        setStatusMessage(t('settingsWindow.cache.saved'));
-      })
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        setStatusMessage(t('settingsWindow.cache.saveFailed', { error: message }));
-      })
-      .finally(() => setCacheBusy(false));
+  const isProxyUrlValid = (raw: string) => {
+    if (raw === '') return true;
+    return /^(https?|socks5h?):\/\/[^\s]+$/i.test(raw);
   };
 
   const toggleCoordinateSystem = () => {
@@ -244,8 +243,56 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
   };
 
   const markSettingsSaved = () => {
-    appendLog({ level: 'info', scope: 'settings', message: t('settingsWindow.status.savedLog') });
-    setStatusMessage(t('settingsWindow.status.savedLog'));
+    const trimmedProxy = proxyUrlInput.trim();
+    if (!isProxyUrlValid(trimmedProxy)) {
+      setStatusMessage(t('settingsWindow.proxy.invalidUrl'));
+      return;
+    }
+    const parsedGb = Number.parseFloat(maxBytesGbInput);
+    const parsedTtl = Number.parseInt(ttlDaysInput, 10);
+    if (!Number.isFinite(parsedGb) || parsedGb <= 0 || !Number.isFinite(parsedTtl) || parsedTtl < 0) {
+      setStatusMessage(t('settingsWindow.cache.invalidInput'));
+      return;
+    }
+    const proxyChanged = trimmedProxy !== savedProxyUrl;
+    const cacheChanged = maxBytesGbInput !== savedMaxBytesGb || ttlDaysInput !== savedTtlDays;
+    if (!proxyChanged && !cacheChanged) {
+      appendLog({ level: 'info', scope: 'settings', message: t('settingsWindow.status.savedLog') });
+      setStatusMessage(t('settingsWindow.status.savedLog'));
+      return;
+    }
+    setCacheBusy(true);
+    void setTileCacheConfig({
+      max_bytes: Math.round(parsedGb * 1024 ** 3),
+      ttl_days: parsedTtl,
+      proxy_url: trimmedProxy === '' ? undefined : trimmedProxy,
+    })
+      .then((stats) => {
+        setCacheStats(stats);
+        setSavedProxyUrl(trimmedProxy);
+        setSavedMaxBytesGb(maxBytesGbInput);
+        setSavedTtlDays(ttlDaysInput);
+        if (proxyChanged) {
+          appendLog({
+            level: 'info',
+            scope: 'settings',
+            message: trimmedProxy === ''
+              ? t('settingsWindow.proxy.savedEmpty')
+              : t('settingsWindow.proxy.savedWith', { url: trimmedProxy }),
+          });
+          setStatusMessage(t('settingsWindow.proxy.savedRestartHint'));
+        } else {
+          appendLog({ level: 'info', scope: 'settings', message: t('settingsWindow.cache.saved') });
+          setStatusMessage(t('settingsWindow.cache.saved'));
+        }
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setStatusMessage(proxyChanged
+          ? t('settingsWindow.proxy.saveFailed', { error: message })
+          : t('settingsWindow.cache.saveFailed', { error: message }));
+      })
+      .finally(() => setCacheBusy(false));
   };
 
   const themeOptions: SettingOption<ThemeMode>[] = [
@@ -413,6 +460,36 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
       ],
     },
     {
+      title: t('settingsWindow.groups.proxy'),
+      hint: t('settingsWindow.proxy.hint'),
+      icon: <FiShare2 />,
+      items: [
+        {
+          label: t('settingsWindow.proxy.url'),
+          value: proxyUrlInput.trim() !== savedProxyUrl
+            ? t('settingsWindow.proxy.pendingApply')
+            : savedProxyUrl === ''
+              ? t('settingsWindow.proxy.notConfigured')
+              : t('settingsWindow.proxy.savedValue', { url: savedProxyUrl }),
+          active: savedProxyUrl !== '' || proxyUrlInput.trim() !== savedProxyUrl,
+          control: (
+            <input
+              type="text"
+              className="create-settings-input"
+              style={proxyInputStyle}
+              value={proxyUrlInput}
+              placeholder="http://127.0.0.1:7890 / socks5://127.0.0.1:1080"
+              onChange={(event) => setProxyUrlInput(event.target.value)}
+              aria-label={t('settingsWindow.proxy.url')}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+            />
+          ),
+        },
+      ],
+    },
+    {
       title: t('settingsWindow.groups.tileCache'),
       hint: t('settingsWindow.cache.hint'),
       icon: <FiDatabase />,
@@ -427,17 +504,33 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
             : t('settingsWindow.cache.loading'),
           active: cacheStats ? cacheStats.sizeBytes > 0 : false,
           control: (
-            <ValueButton
-              label={t('settingsWindow.cache.refresh')}
-              active={false}
-              onClick={refreshCacheStats}
-            />
+            <div style={cacheActionRowStyle}>
+              <button
+                type="button"
+                className="create-settings-secondary-button"
+                onClick={refreshCacheStats}
+                disabled={cacheBusy}
+              >
+                {t('settingsWindow.cache.refresh')}
+              </button>
+              <button
+                type="button"
+                className="create-settings-secondary-button"
+                onClick={handleClearCache}
+                disabled={cacheBusy}
+              >
+                <FiTrash2 />
+                {t('settingsWindow.cache.clear')}
+              </button>
+            </div>
           ),
         },
         {
           label: t('settingsWindow.cache.maxSize'),
-          value: t('settingsWindow.cache.maxSizeValue', { gb: maxBytesGbInput }),
-          active: true,
+          value: maxBytesGbInput !== savedMaxBytesGb
+            ? t('settingsWindow.cache.pendingApply')
+            : t('settingsWindow.cache.maxSizeValue', { gb: maxBytesGbInput }),
+          active: maxBytesGbInput !== savedMaxBytesGb,
           control: (
             <input
               type="number"
@@ -452,8 +545,10 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
         },
         {
           label: t('settingsWindow.cache.ttl'),
-          value: t('settingsWindow.cache.ttlValue', { days: ttlDaysInput }),
-          active: true,
+          value: ttlDaysInput !== savedTtlDays
+            ? t('settingsWindow.cache.pendingApply')
+            : t('settingsWindow.cache.ttlValue', { days: ttlDaysInput }),
+          active: ttlDaysInput !== savedTtlDays,
           control: (
             <input
               type="number"
@@ -464,33 +559,6 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
               onChange={(event) => setTtlDaysInput(event.target.value)}
               aria-label={t('settingsWindow.cache.ttl')}
             />
-          ),
-        },
-        {
-          label: t('settingsWindow.cache.actions'),
-          value: cacheBusy ? t('settingsWindow.cache.busy') : t('settingsWindow.cache.idle'),
-          active: false,
-          control: (
-            <div style={cacheActionRowStyle}>
-              <button
-                type="button"
-                className="create-settings-secondary-button"
-                onClick={handleApplyCacheLimits}
-                disabled={cacheBusy}
-              >
-                <FiSave />
-                {t('settingsWindow.cache.apply')}
-              </button>
-              <button
-                type="button"
-                className="create-settings-secondary-button"
-                onClick={handleClearCache}
-                disabled={cacheBusy}
-              >
-                <FiTrash2 />
-                {t('settingsWindow.cache.clear')}
-              </button>
-            </div>
           ),
         },
       ],

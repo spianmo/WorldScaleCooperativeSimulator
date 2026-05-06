@@ -87,6 +87,10 @@ declare module '@cesium/engine/Source/Core/Resource.js' {
   export { Resource as default } from '@cesium/engine';
 }
 
+declare module '@cesium/engine/Source/Core/RequestScheduler.js' {
+  export { RequestScheduler as default } from '@cesium/engine';
+}
+
 declare module '@cesium/engine/Source/Core/Color.js' {
   export { Color as default } from '@cesium/engine';
 }
@@ -146,6 +150,10 @@ declare module '@cesium/engine/Source/Scene/ClassificationType.js' {
 
 declare module '@cesium/engine/Source/Scene/HeightReference.js' {
   export { HeightReference as default } from '@cesium/engine';
+}
+
+declare module '@cesium/engine/Source/Scene/ShadowMode.js' {
+  export { ShadowMode as default } from '@cesium/engine';
 }
 
 declare module '@cesium/engine/Source/Scene/HorizontalOrigin.js' {

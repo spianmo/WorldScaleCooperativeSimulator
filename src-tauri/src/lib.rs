@@ -497,10 +497,25 @@ async fn tile_cache_fetch(
 ) -> Result<tauri::ipc::Response, String> {
     let cache_root = tile_cache::cache_root(&store.data_dir);
     let _ = tokio::fs::create_dir_all(&cache_root).await;
-    let resp = tile_cache::serve_tile(&cache_root, &path_and_query)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(tauri::ipc::Response::new(resp.bytes))
+    eprintln!("[tile-cache] fetch start: {}", path_and_query);
+    match tile_cache::serve_tile(&cache_root, &path_and_query).await {
+        Ok(resp) => {
+            eprintln!(
+                "[tile-cache] fetch ok: {} bytes={} type={}",
+                path_and_query,
+                resp.bytes.len(),
+                resp.content_type
+            );
+            Ok(tauri::ipc::Response::new(resp.bytes))
+        }
+        Err(error) => {
+            eprintln!(
+                "[tile-cache] fetch err: {} -> chain: {:#}",
+                path_and_query, error
+            );
+            Err(format!("{error:#}"))
+        }
+    }
 }
 
 #[tauri::command]
@@ -588,6 +603,10 @@ pub fn run() {
             let data_dir = app.path().app_data_dir().context("获取应用数据目录失败")?;
             let store = AppStore::load(data_dir.clone())?;
             app.manage(store);
+            // 在 HTTP_CLIENT 第一次构建之前固化代理选择：
+            // 显式 proxy_url（来自 tile_cache_config.toml）优先；否则回落到 macOS 系统代理 / 环境变量。
+            let initial_config = tile_cache::load_config(&data_dir);
+            tile_cache::set_proxy_override(initial_config.proxy_url.clone());
             // 启动时异步跑一次 LRU/TTL 清理，不阻塞窗口创建。
             tauri::async_runtime::spawn(async move {
                 let config = tile_cache::load_config(&data_dir);

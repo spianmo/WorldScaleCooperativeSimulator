@@ -1,6 +1,7 @@
+import type { RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FiCamera, FiCheck, FiMapPin, FiSquare, FiTrash2, FiCornerDownLeft, FiX } from 'react-icons/fi';
-import { TbRulerMeasure } from 'react-icons/tb';
+import { FiCheck, FiMapPin, FiSquare, FiTrash2, FiCornerDownLeft, FiX } from 'react-icons/fi';
+import { TbAdjustmentsHorizontal, TbRulerMeasure } from 'react-icons/tb';
 import { AREA_COLORS, MARKER_COLORS } from './sceneTypes';
 import type { ActiveTool, AreaKind, MarkerKind, MeasureMode } from './sceneTypes';
 import type { SceneOverlaySelection } from './useSceneTools';
@@ -23,6 +24,7 @@ export interface SceneEditToolbarProps {
   onClearSelection: () => void;
   onOpenSettings: () => void;
   settingsOpen: boolean;
+  settingsButtonRef?: RefObject<HTMLButtonElement | null>;
 }
 
 const MARKER_KINDS: MarkerKind[] = ['task', 'observation', 'anomaly'];
@@ -46,6 +48,7 @@ export function SceneEditToolbar({
   onClearSelection,
   onOpenSettings,
   settingsOpen,
+  settingsButtonRef,
 }: SceneEditToolbarProps) {
   const { t } = useTranslation();
 
@@ -75,12 +78,13 @@ export function SceneEditToolbar({
         </div>
 
         <button
+          ref={settingsButtonRef}
           type="button"
           className={`scene-edit-settings ${settingsOpen ? 'is-active' : ''}`}
           aria-pressed={settingsOpen}
           onClick={onOpenSettings}
         >
-          <FiCamera aria-hidden="true" />
+          <TbAdjustmentsHorizontal aria-hidden="true" />
           <span>{t('worldWindowExtra.scene.configure3D')}</span>
         </button>
       </div>

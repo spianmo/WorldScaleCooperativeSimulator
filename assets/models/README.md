@@ -9,7 +9,8 @@
 - `unitree_go2_dae_runtime_parts`：来自 Unitree 官方 `unitree_ros` 的 Go2 DAE 运行时部件，包含 `base/hip/thigh/calf/foot` 和 `go2_description.urdf`，运行时由 `DeviceModelPreview` 通过 `urdf-loader` + `ColladaLoader` 按 URDF 关节层级组装出完整四足机器狗。
 - `unitree_g1_humanoid`：来自 Unitree 官方 `unitree_model` 的 G1 29DoF USD 根资产。当前 `Unitree_G1_29dof.usd/usdz` 只有约 1.6KB/3.8KB，是根引用资产，不是完整运行时可渲染人形机器人网格。
 - `unitree_g1_stl_runtime_parts`：来自 Unitree 官方 `unitree_ros` 的 G1 STL 运行时部件，包含 pelvis、waist、torso、head、logo、主要腿部关节和主要手臂关节，运行时由 `DeviceModelPreview` 通过 `urdf-loader` + `STLLoader` 按 `g1_29dof.urdf` 组装；缺失的 contour link 等通过 `loadMeshCb` 静默跳过。
-- `unitree_g1_baked_glb` / `unitree_go2_baked_glb`：通过 `npm run bake:models`（脚本 `scripts/bake-urdf-to-glb.mjs`）把上述 URDF + STL/DAE 离线烘焙为 `assets/models/baked/unitree_g1.glb`（约 15 MB）和 `assets/models/baked/unitree_go2.glb`（约 40 MB），供 `WorldScene` 在 Cesium `Entity.model` 中近距离渲染；远视距退化为 billboard 像素图标。
+- `unitree_g1_baked_glb` / `unitree_go2_baked_glb`：通过 `npm run bake:models`（脚本 `scripts/bake-urdf-to-glb.mjs`）把上述 URDF + STL/DAE 离线烘焙为 `assets/models/baked/unitree_g1.glb`（约 15 MB）和 `assets/models/baked/unitree_go2.glb`（约 40 MB），供 `WorldScene` 在 Cesium `Entity.model` 中近距离渲染；远视距退化为 billboard 像素图标。烘焙后会接着调用 `scripts/inject-glb-animations.mjs`，给 G1 注入 `walk` 步态、给 Go2 注入 `trot` 步态（左右/对角腿反相位的髋俯仰 + 膝弯曲循环）。Cesium ModelGraphics 设 `runAnimations:true` 即可循环播放。
+- `dji_mavic_baked_glb`：`scripts/inject-glb-animations.mjs` 读 `DJI_Mavic.glb` 并对 `prop1..4` 注入 `prop-spin` 旋翼旋转动画（10 转/秒，绕 Y 轴），输出到 `assets/models/baked/dji_mavic.glb`。`WorldScene` 直接 import 该路径，由 Cesium 在悬停/飞行时自动循环播放。重新执行 `npm run bake:animations` 可再生。
 - `parrot_bebop_reference`：来自 `thedylone/unity-drone-simulator` 的 Parrot Bebop GLB，作为额外真实无人机资源留档。
 
 许可证文件：

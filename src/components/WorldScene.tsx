@@ -21,7 +21,6 @@ import CesiumMath from '@cesium/engine/Source/Core/Math.js';
 import Matrix4 from '@cesium/engine/Source/Core/Matrix4.js';
 import NearFarScalar from '@cesium/engine/Source/Core/NearFarScalar.js';
 import PolygonHierarchy from '@cesium/engine/Source/Core/PolygonHierarchy.js';
-import Resource from '@cesium/engine/Source/Core/Resource.js';
 import ScreenSpaceEventHandler from '@cesium/engine/Source/Core/ScreenSpaceEventHandler.js';
 import ScreenSpaceEventType from '@cesium/engine/Source/Core/ScreenSpaceEventType.js';
 import Transforms from '@cesium/engine/Source/Core/Transforms.js';
@@ -47,7 +46,7 @@ import {
   type SceneSettings,
 } from './sceneOverlay/sceneTypes';
 import type { SceneOverlaySelection } from './sceneOverlay/useSceneTools';
-import djiMavicUrl from '../../assets/models/DJI_Mavic.glb';
+import djiMavicUrl from '../../assets/models/baked/dji_mavic.glb';
 import unitreeG1Glb from '../../assets/models/baked/unitree_g1.glb';
 import unitreeGo2Glb from '../../assets/models/baked/unitree_go2.glb';
 
@@ -165,6 +164,30 @@ export function mapDeviceTelemetryPosition(position: SimulationDevice['telemetry
     Math.max(-0.6, position[1] / 10 - 0.6),
     position[2] / 10 - 6,
   ];
+}
+
+function applySceneSettings(
+  widget: SceneWidget,
+  tileset: Cesium3DTileset | undefined,
+  settings: SceneSettings,
+) {
+  const scene = widget.scene as typeof widget.scene & {
+    highDynamicRange?: boolean;
+    highDynamicRangeSupported?: boolean;
+  };
+
+  scene.shadowMap.enabled = settings.shadows;
+
+  if (tileset) {
+    tileset.maximumScreenSpaceError = settings.maxScreenSpaceError;
+  }
+
+  if (scene.highDynamicRangeSupported) {
+    scene.highDynamicRange = settings.hdr;
+  }
+
+  scene.debugShowFramesPerSecond = settings.showPerformance;
+  scene.requestRender();
 }
 
 function readImportMetaEnv(name: string): string | undefined {
@@ -1227,6 +1250,7 @@ export function WorldScene({
     message: t('worldScene.loadingTiles'),
   }));
   const [selectedEntityName, setSelectedEntityName] = useState<string>();
+  const [tilesetReady, setTilesetReady] = useState(false);
   const center = useMemo(() => resolveWorldCenter(objects), [objects]);
   const centerKey = `${center.lat.toFixed(6)},${center.lon.toFixed(6)},${Math.round(center.radiusM)}`;
   const cameraKey = `${cameraMode}|${cameraPosition?.join(',') ?? ''}|${cameraTarget?.join(',') ?? ''}|${centerKey}`;
@@ -1325,6 +1349,7 @@ export function WorldScene({
       cameraListenerRef.current?.();
       cameraListenerRef.current = undefined;
       tilesetRef.current = undefined;
+      setTilesetReady(false);
       widgetRef.current = undefined;
       if (!widget.isDestroyed()) {
         widget.destroy();
@@ -1363,6 +1388,7 @@ export function WorldScene({
         }
         widget.scene.primitives.add(tileset);
         tilesetRef.current = tileset;
+        setTilesetReady(true);
         setStatus({
           tone: 'ready',
           message: t('worldScene.tilesReady'),
@@ -1706,16 +1732,8 @@ export function WorldScene({
     if (!widget || widget.isDestroyed() || !sceneSettings) {
       return;
     }
-    widget.scene.shadowMap.enabled = sceneSettings.shadows;
-    if ('highDynamicRange' in widget.scene) {
-      (widget.scene as { highDynamicRange?: boolean }).highDynamicRange = sceneSettings.hdr;
-    }
-    widget.scene.debugShowFramesPerSecond = sceneSettings.showPerformance;
-    if (tilesetRef.current) {
-      tilesetRef.current.maximumScreenSpaceError = sceneSettings.maxScreenSpaceError;
-    }
-    widget.scene.requestRender();
-  }, [sceneSettings]);
+    applySceneSettings(widget, tilesetRef.current, sceneSettings);
+  }, [sceneSettings, tilesetReady]);
 
   useEffect(() => {
     const widget = widgetRef.current;
