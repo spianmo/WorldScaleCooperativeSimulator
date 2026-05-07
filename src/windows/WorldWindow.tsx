@@ -1386,6 +1386,10 @@ export function WorldWindow() {
               setHumanRoamStart({ ...geo });
               setViewMode('human');
             }}
+            onHumanRoamExit={() => {
+              setHumanRoamStart(null);
+              setViewMode('global');
+            }}
             minHeight="100%"
             objects={state.world.objects}
             devices={devicesInScene}

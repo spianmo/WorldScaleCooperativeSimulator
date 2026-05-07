@@ -5158,6 +5158,12 @@
     cursor: grabbing;
   }
 
+  .cesium-world-scene-pegman.is-exit {
+    cursor: pointer;
+    border-color: #f4c7c3;
+    background: rgba(255, 244, 244, 0.95);
+  }
+
   .cesium-world-scene-pegman-ghost {
     position: fixed;
     z-index: 9999;

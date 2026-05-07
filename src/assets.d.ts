@@ -148,6 +148,10 @@ declare module '@cesium/engine/Source/Core/buildModuleUrl.js' {
   export default buildModuleUrl;
 }
 
+declare module '@cesium/engine/Source/Scene/Cesium3DTileStyle.js' {
+  export { Cesium3DTileStyle as default } from '@cesium/engine';
+}
+
 declare module '@cesium/engine/Source/Scene/ClassificationType.js' {
   export { ClassificationType as default } from '@cesium/engine';
 }

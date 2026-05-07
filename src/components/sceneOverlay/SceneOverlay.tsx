@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { Compass } from './Compass';
 import { CoordinateAxes } from './CoordinateAxes';
 import { SceneEditToolbar } from './SceneEditToolbar';
@@ -38,10 +38,88 @@ export function SceneOverlay({
   const [activePanel, setActivePanel] = useState<RailPanelId | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [roamActive, setRoamActive] = useState(false);
+  const roamRafRef = useRef<number | null>(null);
+  const cameraHeadingRef = useRef(cameraHeadingDeg);
+  const cameraPitchRef = useRef(cameraPitchDeg);
+
+  useEffect(() => {
+    cameraHeadingRef.current = cameraHeadingDeg;
+  }, [cameraHeadingDeg]);
+  useEffect(() => {
+    cameraPitchRef.current = cameraPitchDeg;
+  }, [cameraPitchDeg]);
 
   const togglePanel = (panel: RailPanelId) => {
     setActivePanel((prev) => (prev === panel ? null : panel));
   };
+
+  const stopRoam = useCallback(() => {
+    if (roamRafRef.current !== null) {
+      cancelAnimationFrame(roamRafRef.current);
+      roamRafRef.current = null;
+    }
+    cameraControllerRef?.current?.endOrbit();
+    setRoamActive(false);
+  }, [cameraControllerRef]);
+
+  const startRoam = useCallback(() => {
+    const controller = cameraControllerRef?.current;
+    if (!controller) {
+      return;
+    }
+    if (!controller.beginOrbit()) {
+      return;
+    }
+    let heading = cameraHeadingRef.current;
+    const initialPitch = cameraPitchRef.current;
+    const pitch = initialPitch >= -5 ? -25 : initialPitch;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = Math.min((now - last) / 1000, 0.1);
+      last = now;
+      heading = (heading + dt * 8 + 360) % 360;
+      controller.setOrbit(heading, pitch);
+      roamRafRef.current = requestAnimationFrame(tick);
+    };
+    roamRafRef.current = requestAnimationFrame(tick);
+    setRoamActive(true);
+  }, [cameraControllerRef]);
+
+  const toggleRoam = useCallback(() => {
+    if (roamActive) {
+      stopRoam();
+    } else {
+      startRoam();
+    }
+  }, [roamActive, startRoam, stopRoam]);
+
+  useEffect(() => {
+    return () => {
+      if (roamRafRef.current !== null) {
+        cancelAnimationFrame(roamRafRef.current);
+        roamRafRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!roamActive) {
+      return undefined;
+    }
+    const interrupt = (event: Event) => {
+      const target = event.target;
+      if (target instanceof HTMLCanvasElement) {
+        stopRoam();
+      }
+    };
+    window.addEventListener('wheel', interrupt, { capture: true, passive: true });
+    window.addEventListener('pointerdown', interrupt, true);
+    return () => {
+      window.removeEventListener('wheel', interrupt, true);
+      window.removeEventListener('pointerdown', interrupt, true);
+    };
+  }, [roamActive, stopRoam]);
 
   useEffect(() => {
     if (!tools.selection) {
@@ -84,7 +162,14 @@ export function SceneOverlay({
           onFocusDevice={onFocusDevice}
           onFocusObject={onFocusObject}
           measureActive={tools.activeTool === 'measure'}
-          onActivateMeasure={() => tools.setActiveTool('measure')}
+          onActivateMeasure={() => {
+            if (roamActive) {
+              stopRoam();
+            }
+            tools.setActiveTool('measure');
+          }}
+          roamActive={roamActive}
+          onToggleRoam={toggleRoam}
         />
       </div>
 

@@ -26,6 +26,7 @@ import ScreenSpaceEventHandler from '@cesium/engine/Source/Core/ScreenSpaceEvent
 import ScreenSpaceEventType from '@cesium/engine/Source/Core/ScreenSpaceEventType.js';
 import Transforms from '@cesium/engine/Source/Core/Transforms.js';
 import buildModuleUrl from '@cesium/engine/Source/Core/buildModuleUrl.js';
+import Cesium3DTileStyle from '@cesium/engine/Source/Scene/Cesium3DTileStyle.js';
 import ClassificationType from '@cesium/engine/Source/Scene/ClassificationType.js';
 import HeightReference from '@cesium/engine/Source/Scene/HeightReference.js';
 import HorizontalOrigin from '@cesium/engine/Source/Scene/HorizontalOrigin.js';
@@ -120,6 +121,7 @@ export interface WorldSceneProps {
   cameraMode?: 'orbit' | 'first_person' | 'human_roam';
   humanRoamStart?: HumanRoamStart | null;
   onHumanRoamStartPlace?: (geo: { lon: number; lat: number }) => void;
+  onHumanRoamExit?: () => void;
   onHumanRoamPoseChange?: (pose: { lon: number; lat: number; height: number; headingDeg: number }) => void;
   devicePosition?: [number, number, number];
   deviceRotation?: [number, number, number];
@@ -206,8 +208,14 @@ export function mapDeviceTelemetryPosition(position: SimulationDevice['telemetry
 // 单纯改 lightColor 在 HDR 渲染下会被高亮压平，色感不明显。
 // ============================================================
 
+function isNightHour(hour: number): boolean {
+  return hour < 5 || hour >= 20;
+}
+
 function lightColorForHour(hour: number): Cartesian3 {
-  if (hour < 5 || hour >= 20) return new Cartesian3(0.18, 0.22, 0.5);
+  // 夜间没有太阳直射光：把方向光压成与环境光接近的弱冷调，
+  // 避免出现"夜里仍有方向光投到向阳面"的违和感。
+  if (isNightHour(hour)) return new Cartesian3(0.12, 0.16, 0.32);
   if (hour < 6) return new Cartesian3(1.6, 0.7, 0.45);
   if (hour < 7) return new Cartesian3(2.4, 1.4, 0.7);
   if (hour < 10) return new Cartesian3(2.9, 2.6, 2.1);
@@ -227,7 +235,9 @@ function lightColorForHour(hour: number): Cartesian3 {
 // 这里所有数值都按 procedural sky 量级校准，最低也保留 (0.2, 0.3, 0.7) 防夜黑。
 function ambientSHForHour(hour: number): Cartesian3[] {
   let c0: Cartesian3;
-  if (hour < 5 || hour >= 20) c0 = new Cartesian3(0.22, 0.32, 0.7);
+  // 夜间环境光：只有白天 (1.55, 1.8, 2.4) 的 ~20%，肉眼明显比白天暗，
+  // 但保留蓝色基底让街景仍可辨认（再低就会成"看不见"的剪影）。
+  if (isNightHour(hour)) c0 = new Cartesian3(0.32, 0.42, 0.78);
   else if (hour < 6) c0 = new Cartesian3(1.4, 0.85, 0.95);
   else if (hour < 7) c0 = new Cartesian3(1.7, 1.3, 1.2);
   else if (hour < 10) c0 = new Cartesian3(1.4, 1.7, 2.2);
@@ -273,11 +283,19 @@ function applySceneSettings(
     highDynamicRangeSupported?: boolean;
   };
 
-  scene.shadowMap.enabled = settings.shadows;
-  if (settings.shadows) {
+  // 时段色调系统始终启用（不挂在 shadows 开关下），让"黄金 / 日落 / 蓝调 / 夜"
+  // 在任何时候都看得出明显差异；shadows 开关只控制是否投影。
+  const date = resolveWorldLightingDate(worldMetadata, wallClockAt);
+  const hour = date.getHours() + date.getMinutes() / 60 + date.getSeconds() / 3600;
+  const night = isNightHour(hour);
+
+  // 夜间没有太阳，强制关阴影（不论用户是否开了 settings.shadows）：
+  // 否则 Cesium 会按"地球另一面的太阳"算出诡异的反向投影。
+  const shadowsEnabled = settings.shadows && !night;
+  scene.shadowMap.enabled = shadowsEnabled;
+  if (shadowsEnabled) {
     // globe: false 导致没有地表接阴影，shadowMap 默认参数对城市级 3D Tiles
     // 几乎不可见，把暗度/尺寸/距离都调到电影级强度（darkness 越小阴影越深）。
-    // 0.45 是手感折中：白天阴影明显但夜晚不会把整城压成全黑。
     scene.shadowMap.softShadows = true;
     scene.shadowMap.darkness = 0.45;
     scene.shadowMap.maximumDistance = 10000;
@@ -286,14 +304,9 @@ function applySceneSettings(
     scene.shadowMap.fadingEnabled = false;
   }
 
-  // 时段色调系统始终启用（不挂在 shadows 开关下），让"黄金 / 日落 / 蓝调 / 夜"
-  // 在任何时候都看得出明显差异；shadows 开关只控制是否投影。
-  const date = resolveWorldLightingDate(worldMetadata, wallClockAt);
-  const hour = date.getHours() + date.getMinutes() / 60 + date.getSeconds() / 3600;
-
   if (tileset) {
     tileset.maximumScreenSpaceError = settings.maxScreenSpaceError;
-    tileset.shadows = settings.shadows ? ShadowMode.ENABLED : ShadowMode.DISABLED;
+    tileset.shadows = shadowsEnabled ? ShadowMode.ENABLED : ShadowMode.DISABLED;
     tileset.lightColor = lightColorForHour(hour);
     const ibl = (tileset as Cesium3DTileset & {
       imageBasedLighting?: { sphericalHarmonicCoefficients?: Cartesian3[] };
@@ -301,6 +314,15 @@ function applySceneSettings(
     if (ibl) {
       ibl.sphericalHarmonicCoefficients = ambientSHForHour(hour);
     }
+    // Google Photorealistic 3D Tiles 的纹理预烘焙了均匀光照，HDR tone mapping
+    // 又会在 lightColor/IBL 压低时自动补偿曝光，导致单靠光照参数夜里反而比白天亮。
+    // 这里改用 Cesium3DTileStyle 直接对每个 fragment 颜色做乘法：白天清空样式，
+    // 夜间乘以 (0.28, 0.32, 0.5) ——保留蓝色基底但显著压暗，且不参与 HDR 曝光补偿。
+    tileset.style = night
+      ? new Cesium3DTileStyle({
+          color: 'color() * vec4(0.28, 0.32, 0.5, 1.0)',
+        })
+      : undefined;
   }
 
   scene.backgroundColor = backgroundColorForHour(hour);
@@ -1387,6 +1409,7 @@ export function WorldScene({
   cameraControllerRef,
   humanRoamStart,
   onHumanRoamStartPlace,
+  onHumanRoamExit,
   onHumanRoamPoseChange,
 }: WorldSceneProps) {
   const { t } = useTranslation();
@@ -2261,6 +2284,8 @@ export function WorldScene({
       ) : null}
       {onHumanRoamStartPlace && cameraMode === 'human_roam' ? (
         <PegmanDraggable
+          inStreetView={!!humanRoamStart}
+          onExit={onHumanRoamExit}
           onDrop={(clientX, clientY) => {
             const widget = widgetRef.current;
             if (!widget || widget.isDestroyed()) return;
@@ -2321,9 +2346,11 @@ function PerformanceHud() {
 
 interface PegmanDraggableProps {
   onDrop: (clientX: number, clientY: number) => void;
+  inStreetView?: boolean;
+  onExit?: () => void;
 }
 
-function PegmanDraggable({ onDrop }: PegmanDraggableProps) {
+function PegmanDraggable({ onDrop, inStreetView = false, onExit }: PegmanDraggableProps) {
   const [dragging, setDragging] = useState(false);
   const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => {
@@ -2343,6 +2370,21 @@ function PegmanDraggable({ onDrop }: PegmanDraggableProps) {
       window.removeEventListener('pointerup', onUp);
     };
   }, [dragging, onDrop]);
+  if (inStreetView) {
+    return (
+      <button
+        type="button"
+        title="退出街景漫游"
+        aria-label="退出街景漫游"
+        className="cesium-world-scene-pegman is-exit"
+        onClick={() => {
+          onExit?.();
+        }}
+      >
+        <PegmanExitGlyph />
+      </button>
+    );
+  }
   return (
     <>
       <button
@@ -2366,6 +2408,18 @@ function PegmanDraggable({ onDrop }: PegmanDraggableProps) {
         </div>
       ) : null}
     </>
+  );
+}
+
+function PegmanExitGlyph() {
+  return (
+    <svg width="28" height="40" viewBox="0 0 56 80" aria-hidden="true">
+      <ellipse cx="28" cy="76" rx="14" ry="4" fill="rgba(11,31,84,0.28)" />
+      <circle cx="28" cy="14" r="10" fill="#fbbc04" stroke="#202124" strokeWidth="1.6" />
+      <path d="M16 28 L40 28 L36 54 L20 54 Z" fill="#d93025" stroke="#7a1d18" strokeWidth="1.4" />
+      <path d="M22 54 L20 72 M34 54 L36 72" stroke="#202124" strokeWidth="4" strokeLinecap="round" />
+      <path d="M20 34 L36 50 M36 34 L20 50" stroke="#ffffff" strokeWidth="4" strokeLinecap="round" />
+    </svg>
   );
 }
 

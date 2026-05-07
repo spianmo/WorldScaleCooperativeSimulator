@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FiCrosshair, FiLayers, FiMapPin, FiNavigation, FiShare2, FiTarget, FiBox } from 'react-icons/fi';
-import { TbRulerMeasure } from 'react-icons/tb';
+import { TbRulerMeasure, TbView360 } from 'react-icons/tb';
 import type { SceneArea, SceneLayerId, SceneLayerState, SceneMarker, SceneMeasurement } from './sceneTypes';
 import type { SimulationDevice, SimulationGoal, SimulationTask, WorldObject } from '../../types';
 
 export type RailPanelId = 'layers' | 'objects' | 'topology' | 'measure' | 'locate' | 'goal';
+export type RailButtonId = RailPanelId | 'roam';
 
 export interface SceneRailProps {
   activePanel: RailPanelId | null;
@@ -23,23 +24,29 @@ export interface SceneRailProps {
   onFocusObject: (objectId: string) => void;
   onActivateMeasure: () => void;
   measureActive: boolean;
+  onToggleRoam: () => void;
+  roamActive: boolean;
 }
 
-const RAIL_BUTTONS: Array<{ id: RailPanelId; iconKey: 'layers' | 'box' | 'share' | 'ruler' | 'crosshair' | 'target' }> = [
+type RailIconKey = 'layers' | 'box' | 'share' | 'ruler' | 'crosshair' | 'target' | 'roam';
+
+const RAIL_BUTTONS: Array<{ id: RailButtonId; iconKey: RailIconKey }> = [
   { id: 'layers', iconKey: 'layers' },
   { id: 'objects', iconKey: 'box' },
   { id: 'topology', iconKey: 'share' },
   { id: 'measure', iconKey: 'ruler' },
   { id: 'locate', iconKey: 'crosshair' },
   { id: 'goal', iconKey: 'target' },
+  { id: 'roam', iconKey: 'roam' },
 ];
 
-function railIcon(iconKey: string) {
+function railIcon(iconKey: RailIconKey) {
   if (iconKey === 'layers') return <FiLayers />;
   if (iconKey === 'box') return <FiBox />;
   if (iconKey === 'share') return <FiShare2 />;
   if (iconKey === 'ruler') return <TbRulerMeasure />;
   if (iconKey === 'crosshair') return <FiCrosshair />;
+  if (iconKey === 'roam') return <TbView360 />;
   return <FiTarget />;
 }
 
@@ -59,6 +66,8 @@ export function SceneRail({
   onFocusObject,
   onActivateMeasure,
   measureActive,
+  onToggleRoam,
+  roamActive,
 }: SceneRailProps) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -90,7 +99,7 @@ export function SceneRail({
     return map;
   }, [tasks]);
 
-  const labelFor = (id: RailPanelId) => t(`worldWindowExtra.scene.rail.${id}`);
+  const labelFor = (id: RailButtonId) => t(`worldWindowExtra.scene.rail.${id}`);
 
   return (
     <div
@@ -100,7 +109,10 @@ export function SceneRail({
       aria-label={t('worldWindowExtra.scene.rail.aria')}
     >
       {RAIL_BUTTONS.map((button, index) => {
-        const isActive = activePanel === button.id || (button.id === 'measure' && measureActive);
+        const isActive =
+          (button.id !== 'roam' && activePanel === button.id) ||
+          (button.id === 'measure' && measureActive) ||
+          (button.id === 'roam' && roamActive);
         return (
           <div key={button.id} className="scene-rail-slot">
             {index > 0 ? <span className="scene-rail-divider" aria-hidden="true" /> : null}
@@ -112,6 +124,10 @@ export function SceneRail({
               onClick={() => {
                 if (button.id === 'measure') {
                   onActivateMeasure();
+                  return;
+                }
+                if (button.id === 'roam') {
+                  onToggleRoam();
                   return;
                 }
                 onTogglePanel(button.id);
