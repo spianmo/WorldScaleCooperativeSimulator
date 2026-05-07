@@ -1,4 +1,5 @@
 import {
+  createDefaultSimulationState,
   type DeviceKind,
   type GoalPriority,
   type LogLevel,
@@ -744,11 +745,31 @@ function collectWorldMetadata(objects: RustWorldObject[]): Record<string, string
   };
 }
 
+function ensureSettingsCompatibility(state: SimulationState): SimulationState {
+  const defaults = createDefaultSimulationState();
+  const settings = state.settings ?? defaults.settings;
+  const maps = settings.maps;
+  const googleMaps = maps?.googleMaps ?? defaults.settings.maps.googleMaps;
+  const cesiumIon = maps?.cesiumIon ?? defaults.settings.maps.cesiumIon;
+  return {
+    ...state,
+    settings: {
+      ...defaults.settings,
+      ...settings,
+      maps: {
+        googleMaps: { ...defaults.settings.maps.googleMaps, ...googleMaps },
+        cesiumIon: { ...defaults.settings.maps.cesiumIon, ...cesiumIon },
+      },
+    },
+  };
+}
+
 export async function loadSimulationState() {
   const state = await invokeApp<SimulationState | RustSimulationState>(SIMULATION_COMMANDS.loadState);
-  return 'world' in state && 'settings' in state && 'devices' in state
+  const normalized = 'world' in state && 'settings' in state && 'devices' in state
     ? (state as SimulationState)
     : fromRustSimulationState(state as RustSimulationState);
+  return ensureSettingsCompatibility(normalized);
 }
 
 export async function saveSimulationState(state: SimulationState) {

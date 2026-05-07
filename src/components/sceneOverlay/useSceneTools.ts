@@ -16,6 +16,7 @@ import {
 } from './sceneTypes';
 
 const LAYERS_STORAGE_KEY = 'world-scale-simulator.scene.layers';
+const SETTINGS_STORAGE_KEY = 'world-scale-simulator.scene.settings';
 
 function loadStoredLayers(): SceneLayerState[] {
   if (typeof window === 'undefined') {
@@ -32,6 +33,29 @@ function loadStoredLayers(): SceneLayerState[] {
     );
   } catch {
     return DEFAULT_LAYERS;
+  }
+}
+
+function loadStoredSettings(): SceneSettings {
+  if (typeof window === 'undefined') {
+    return DEFAULT_SCENE_SETTINGS;
+  }
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) {
+      return DEFAULT_SCENE_SETTINGS;
+    }
+    const parsed = JSON.parse(raw) as Partial<SceneSettings>;
+    const merged = { ...DEFAULT_SCENE_SETTINGS } as Record<string, unknown>;
+    (Object.keys(DEFAULT_SCENE_SETTINGS) as Array<keyof SceneSettings>).forEach((key) => {
+      const value = parsed[key];
+      if (typeof value === typeof DEFAULT_SCENE_SETTINGS[key]) {
+        merged[key] = value as unknown;
+      }
+    });
+    return merged as unknown as SceneSettings;
+  } catch {
+    return DEFAULT_SCENE_SETTINGS;
   }
 }
 
@@ -110,7 +134,7 @@ export function useSceneTools(): UseSceneToolsReturn {
   const [draftMeasurement, setDraftMeasurement] = useState<GeoPoint | null>(null);
   const [draftArea, setDraftArea] = useState<GeoPoint[]>([]);
   const [layers, setLayers] = useState<SceneLayerState[]>(loadStoredLayers);
-  const [settings, setSettings] = useState<SceneSettings>(DEFAULT_SCENE_SETTINGS);
+  const [settings, setSettings] = useState<SceneSettings>(loadStoredSettings);
   const [selection, setSelection] = useState<SceneOverlaySelection | null>(null);
 
   const ensureLayerEnabled = useCallback((id: SceneLayerId) => {
@@ -137,6 +161,35 @@ export function useSceneTools(): UseSceneToolsReturn {
       // localStorage may be unavailable (private mode / quota); ignore
     }
   }, [layers]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    } catch {
+      // localStorage may be unavailable (private mode / quota); ignore
+    }
+  }, [settings]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+    const handleStorage = (event: StorageEvent) => {
+      if (event.storageArea && event.storageArea !== window.localStorage) {
+        return;
+      }
+      if (event.key === LAYERS_STORAGE_KEY) {
+        setLayers(loadStoredLayers());
+      } else if (event.key === SETTINGS_STORAGE_KEY) {
+        setSettings(loadStoredSettings());
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
 
   const setActiveTool = useCallback(
     (tool: ActiveTool) => {

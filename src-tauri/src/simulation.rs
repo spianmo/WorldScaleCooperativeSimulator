@@ -306,17 +306,17 @@ fn finalize_world_metadata(world: &mut World) {
     let building_count = world
         .objects
         .iter()
-        .filter(|object| {
-            matches!(
-                object.kind,
-                WorldObjectKind::Building | WorldObjectKind::Landmark
-            )
-        })
+        .filter(|object| object.kind == WorldObjectKind::Building)
         .count();
     let road_count = world
         .objects
         .iter()
         .filter(|object| object.kind == WorldObjectKind::RoadSegment)
+        .count();
+    let poi_count = world
+        .objects
+        .iter()
+        .filter(|object| object.kind == WorldObjectKind::Landmark)
         .count();
     if let Some(metadata_object) = world.objects.iter_mut().find(|object| {
         object
@@ -333,7 +333,7 @@ fn finalize_world_metadata(world: &mut World) {
             .insert("road_count".into(), road_count.to_string());
         metadata_object
             .properties
-            .insert("poi_count".into(), "0".into());
+            .insert("poi_count".into(), poi_count.to_string());
     }
 }
 
@@ -444,8 +444,12 @@ fn overpass_element_to_feature(
         .get("natural")
         .map(|value| value == "water")
         .unwrap_or(false);
+    let has_poi = element.tags.contains_key("amenity")
+        || element.tags.contains_key("shop")
+        || element.tags.contains_key("tourism")
+        || element.tags.contains_key("historic");
 
-    if !(has_highway || has_building || has_green || has_water) {
+    if !(has_highway || has_building || has_green || has_water || has_poi) {
         return None;
     }
 
@@ -491,6 +495,15 @@ fn overpass_element_to_feature(
     properties.insert("osm_type".into(), element.element_type);
     properties.insert("lat".into(), format!("{:.6}", center_point.lat));
     properties.insert("lon".into(), format!("{:.6}", center_point.lon));
+    if points.len() >= 2 {
+        // 前端 addPolylineForObject 用 'lat,lon;lat,lon;...' 格式还原折线/轮廓。
+        let geometry_str = points
+            .iter()
+            .map(|p| format!("{:.6},{:.6}", p.lat, p.lon))
+            .collect::<Vec<_>>()
+            .join(";");
+        properties.insert("geometry".into(), geometry_str);
+    }
     for (key, value) in &element.tags {
         if matches!(
             key.as_str(),
@@ -502,6 +515,10 @@ fn overpass_element_to_feature(
                 | "natural"
                 | "height"
                 | "building:levels"
+                | "amenity"
+                | "shop"
+                | "tourism"
+                | "historic"
         ) {
             properties.insert(format!("osm_tag_{key}"), value.clone());
         }
@@ -533,6 +550,29 @@ fn overpass_element_to_feature(
             tags: vec!["road_segment".into(), "osm".into(), "real_street".into()],
             walkable: true,
             interactive: false,
+            properties,
+        });
+    }
+
+    if has_poi && !has_building {
+        let category = element
+            .tags
+            .get("amenity")
+            .or_else(|| element.tags.get("shop"))
+            .or_else(|| element.tags.get("tourism"))
+            .or_else(|| element.tags.get("historic"))
+            .cloned()
+            .unwrap_or_else(|| "poi".into());
+        properties.insert("material".into(), "marker".into());
+        properties.insert("poi_category".into(), category);
+        return Some(OsmWorldFeature {
+            name,
+            kind: WorldObjectKind::Landmark,
+            position: Vector3::new(center_x, 0.0, center_z),
+            size: Vector3::new(2.0, 2.0, 2.0),
+            tags: vec!["landmark".into(), "poi".into(), "osm".into()],
+            walkable: true,
+            interactive: true,
             properties,
         });
     }
@@ -625,8 +665,12 @@ pub async fn fetch_osm_street_dataset(
           way["leisure"~"park|garden"](around:{radius},{lat},{lon});
           way["landuse"~"grass|park|recreation_ground"](around:{radius},{lat},{lon});
           way["natural"="water"](around:{radius},{lat},{lon});
+          node["amenity"](around:{radius},{lat},{lon});
+          node["shop"](around:{radius},{lat},{lon});
+          node["tourism"](around:{radius},{lat},{lon});
+          node["historic"](around:{radius},{lat},{lon});
         );
-        out geom 160;
+        out geom 260;
         "#,
         radius = radius_m.round(),
         lat = center_lat,
@@ -647,26 +691,16 @@ pub async fn fetch_osm_street_dataset(
         .filter_map(|element| {
             overpass_element_to_feature(element, center_lat, center_lon, size, radius_m)
         })
-        .take(180)
+        .take(280)
         .collect::<Vec<_>>();
 
-    features.sort_by(|left, right| {
-        let left_rank = if left.kind == WorldObjectKind::RoadSegment {
-            0
-        } else if left.kind == WorldObjectKind::Building {
-            1
-        } else {
-            2
-        };
-        let right_rank = if right.kind == WorldObjectKind::RoadSegment {
-            0
-        } else if right.kind == WorldObjectKind::Building {
-            1
-        } else {
-            2
-        };
-        left_rank.cmp(&right_rank)
-    });
+    let feature_rank = |kind: WorldObjectKind| match kind {
+        WorldObjectKind::RoadSegment => 0,
+        WorldObjectKind::Building => 1,
+        WorldObjectKind::Landmark => 2,
+        _ => 3,
+    };
+    features.sort_by(|left, right| feature_rank(left.kind).cmp(&feature_rank(right.kind)));
 
     if features
         .iter()

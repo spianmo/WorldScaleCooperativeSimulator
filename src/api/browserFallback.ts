@@ -35,6 +35,25 @@ function resolveBrowserTheme() {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
+function migrateStoredState(state: SimulationState): SimulationState {
+  const defaults = createDefaultSimulationState();
+  const settings = state.settings ?? defaults.settings;
+  const maps = settings.maps;
+  const googleMaps = maps?.googleMaps ?? defaults.settings.maps.googleMaps;
+  const cesiumIon = maps?.cesiumIon ?? defaults.settings.maps.cesiumIon;
+  return {
+    ...state,
+    settings: {
+      ...defaults.settings,
+      ...settings,
+      maps: {
+        googleMaps: { ...defaults.settings.maps.googleMaps, ...googleMaps },
+        cesiumIon: { ...defaults.settings.maps.cesiumIon, ...cesiumIon },
+      },
+    },
+  };
+}
+
 function readStoredState(): SimulationState {
   if (!canUseLocalStorage()) {
     return memoryState;
@@ -47,8 +66,8 @@ function readStoredState(): SimulationState {
 
   try {
     const parsed = JSON.parse(rawState) as SimulationState;
-    memoryState = parsed;
-    return parsed;
+    memoryState = migrateStoredState(parsed);
+    return memoryState;
   } catch {
     return memoryState;
   }
