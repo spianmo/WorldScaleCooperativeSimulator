@@ -277,6 +277,42 @@ function cameraForDevice(device: SimulationDevice | undefined): {
   };
 }
 
+function cameraBehindDevice(device: SimulationDevice | undefined): {
+  position: [number, number, number];
+  target: [number, number, number];
+} {
+  if (!device) {
+    return {
+      position: [3.4, 1.2, 5.1],
+      target: [0.1, 0.28, -2.8],
+    };
+  }
+
+  const scenePosition = mapDeviceTelemetryPosition(device.telemetry.position);
+  const headingRad = (device.telemetry.headingDeg / 180) * Math.PI;
+  const forward = [Math.cos(headingRad), Math.sin(headingRad)] as [number, number];
+  const eyeHeightM = deviceEyeHeightM(device);
+  const eyeScene = eyeHeightM / 10;
+
+  const backDistanceScene = 0.4;
+  const cameraHeightExtra = 0.08;
+  const lookAheadScene = 0.4;
+
+  const position: [number, number, number] = [
+    scenePosition[0] - forward[0] * backDistanceScene,
+    scenePosition[1] + eyeScene + cameraHeightExtra,
+    scenePosition[2] - forward[1] * backDistanceScene,
+  ];
+
+  const target: [number, number, number] = [
+    scenePosition[0] + forward[0] * lookAheadScene,
+    scenePosition[1] + eyeScene,
+    scenePosition[2] + forward[1] * lookAheadScene,
+  ];
+
+  return { position, target };
+}
+
 function taskProgress(task: SimulationTask) {
   const designProgress: Record<string, number> = {
     'default-task-uav-scan': 75,
@@ -628,6 +664,9 @@ export function WorldWindow() {
       return cameraForDevice(selectedDevice);
     }
     if (viewMode === 'human') {
+      if (!humanRoamStart) {
+        return cameraBehindDevice(selectedDevice);
+      }
       return {
         position: [3.4, 1.2, 5.1] as [number, number, number],
         target: [0.1, 0.28, -2.8] as [number, number, number],
@@ -637,7 +676,7 @@ export function WorldWindow() {
       position: [10.8, 10.2, 10.6] as [number, number, number],
       target: [0, -0.2, 0] as [number, number, number],
     };
-  }, [viewMode, selectedDevice]);
+  }, [viewMode, selectedDevice, humanRoamStart]);
   const devicesInScene = useMemo(
     () => (viewMode === 'device' && selectedDevice
       ? state.devices.filter((device) => device.id !== selectedDevice.id)

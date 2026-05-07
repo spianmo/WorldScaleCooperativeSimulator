@@ -892,6 +892,9 @@ function flyToSceneCamera(widget: SceneWidget, center: GeoCenter, cameraPosition
 
 function applyWorldCamera(widget: SceneWidget, center: GeoCenter, mode: WorldSceneProps['cameraMode'], cameraPosition?: [number, number, number], cameraTarget?: [number, number, number]) {
   if (mode === 'human_roam') {
+    if (cameraPosition) {
+      flyToSceneCamera(widget, center, cameraPosition, cameraTarget);
+    }
     return;
   }
   if (mode === 'first_person' && cameraPosition) {
@@ -2018,8 +2021,11 @@ export function WorldScene({
     if (!widget || widget.isDestroyed()) {
       return;
     }
+    if (cameraMode === 'human_roam' && humanRoamStart) {
+      return;
+    }
     applyWorldCamera(widget, center, cameraMode, cameraPosition, cameraTarget);
-  }, [cameraKey, resolvedCesiumIonToken, resolvedGoogleMapsApiKey]);
+  }, [cameraKey, resolvedCesiumIonToken, resolvedGoogleMapsApiKey, humanRoamStart]);
 
   const onHumanRoamPoseChangeRef = useRef(onHumanRoamPoseChange);
   useEffect(() => {
