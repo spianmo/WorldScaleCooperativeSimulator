@@ -197,20 +197,68 @@ export function mapDeviceTelemetryPosition(position: SimulationDevice['telemetry
 
 // Google Photorealistic 3D Tiles 的纹理预烘焙了均匀光照，单靠 Cesium 的太阳
 // 位置不会让贴图随时间变明暗。按当前仿真小时映射出对应日光颜色，强行覆盖纹理。
+// ============================================================
+// 时段氛围系统：根据小时返回三组渲染参数
+//   1) lightColor      —— 太阳直接光（影响向阳面）
+//   2) ambientSH       —— 9 项球谐系数 IBL（影响阴影侧的环境光色调）
+//   3) backgroundColor —— 远景雾化背景色
+// 三者联动才能让"黄金时刻 / 日落 / 蓝调 / 深夜"互不混淆。
+// 单纯改 lightColor 在 HDR 渲染下会被高亮压平，色感不明显。
+// ============================================================
+
 function lightColorForHour(hour: number): Cartesian3 {
-  // 黄昏/黑夜的冷蓝紫
-  if (hour < 5 || hour >= 20) return new Cartesian3(0.18, 0.2, 0.35);
-  // 日出
-  if (hour < 7) return new Cartesian3(1.8, 1.05, 0.55);
-  if (hour < 10) return new Cartesian3(2.6, 2.4, 2.0);
+  if (hour < 5 || hour >= 20) return new Cartesian3(0.18, 0.22, 0.5);
+  if (hour < 6) return new Cartesian3(1.6, 0.7, 0.45);
+  if (hour < 7) return new Cartesian3(2.4, 1.4, 0.7);
+  if (hour < 10) return new Cartesian3(2.9, 2.6, 2.1);
   if (hour < 14) return new Cartesian3(3.6, 3.5, 3.3);
-  if (hour < 17) return new Cartesian3(2.6, 2.4, 2.0);
-  // 17-18 黄金时刻：偏橙金，太阳压低，阴影变长
-  if (hour < 18) return new Cartesian3(2.6, 1.55, 0.65);
-  // 18-19 日落：暖红橙
-  if (hour < 19) return new Cartesian3(2.0, 1.0, 0.4);
-  // 19-20 蓝调时刻
-  return new Cartesian3(0.7, 0.55, 0.75);
+  if (hour < 17) return new Cartesian3(2.9, 2.6, 2.1);
+  if (hour < 18) return new Cartesian3(3.5, 1.7, 0.55);
+  if (hour < 19) return new Cartesian3(2.6, 0.85, 0.3);
+  return new Cartesian3(0.5, 0.7, 1.4);
+}
+
+// 9 项 SH 直流分量（c0）= 环境光主体色。其他 8 项保持 0 即等价于"均匀环境光"，
+// 这样阴影侧整体被 c0 着色（白天偏天空蓝、日落偏暖紫、蓝调偏深蓝）。
+//
+// 重要量级：Cesium 默认 procedural sky 的 c0 通常落在 ~(1.5, 1.8, 2.2)。
+// 一旦给 sphericalHarmonicCoefficients 赋值就会完全 override 这个 default，
+// 数值若 < 1.0 会让阴影侧严重欠曝（曾出现过整城变剪影的崩坏）。
+// 这里所有数值都按 procedural sky 量级校准，最低也保留 (0.2, 0.3, 0.7) 防夜黑。
+function ambientSHForHour(hour: number): Cartesian3[] {
+  let c0: Cartesian3;
+  if (hour < 5 || hour >= 20) c0 = new Cartesian3(0.22, 0.32, 0.7);
+  else if (hour < 6) c0 = new Cartesian3(1.4, 0.85, 0.95);
+  else if (hour < 7) c0 = new Cartesian3(1.7, 1.3, 1.2);
+  else if (hour < 10) c0 = new Cartesian3(1.4, 1.7, 2.2);
+  else if (hour < 14) c0 = new Cartesian3(1.55, 1.8, 2.4);
+  else if (hour < 17) c0 = new Cartesian3(1.55, 1.7, 2.05);
+  else if (hour < 18) c0 = new Cartesian3(2.05, 1.4, 1.05);
+  else if (hour < 19) c0 = new Cartesian3(1.7, 0.85, 1.0);
+  else c0 = new Cartesian3(0.55, 0.85, 1.7);
+  return [
+    c0,
+    new Cartesian3(0, 0, 0),
+    new Cartesian3(0, 0, 0),
+    new Cartesian3(0, 0, 0),
+    new Cartesian3(0, 0, 0),
+    new Cartesian3(0, 0, 0),
+    new Cartesian3(0, 0, 0),
+    new Cartesian3(0, 0, 0),
+    new Cartesian3(0, 0, 0),
+  ];
+}
+
+function backgroundColorForHour(hour: number): Color {
+  if (hour < 5 || hour >= 20) return Color.fromCssColorString('#0c1426');
+  if (hour < 6) return Color.fromCssColorString('#7a4a52');
+  if (hour < 7) return Color.fromCssColorString('#d68a72');
+  if (hour < 10) return Color.fromCssColorString('#bcd3ec');
+  if (hour < 14) return Color.fromCssColorString('#c8dbf2');
+  if (hour < 17) return Color.fromCssColorString('#cdd6e3');
+  if (hour < 18) return Color.fromCssColorString('#f0a06d');
+  if (hour < 19) return Color.fromCssColorString('#c95838');
+  return Color.fromCssColorString('#1e3358');
 }
 
 function applySceneSettings(
@@ -229,25 +277,33 @@ function applySceneSettings(
   if (settings.shadows) {
     // globe: false 导致没有地表接阴影，shadowMap 默认参数对城市级 3D Tiles
     // 几乎不可见，把暗度/尺寸/距离都调到电影级强度（darkness 越小阴影越深）。
+    // 0.45 是手感折中：白天阴影明显但夜晚不会把整城压成全黑。
     scene.shadowMap.softShadows = true;
-    scene.shadowMap.darkness = 0.32;
+    scene.shadowMap.darkness = 0.45;
     scene.shadowMap.maximumDistance = 10000;
     scene.shadowMap.size = 4096;
     scene.shadowMap.normalOffset = true;
     scene.shadowMap.fadingEnabled = false;
   }
 
+  // 时段色调系统始终启用（不挂在 shadows 开关下），让"黄金 / 日落 / 蓝调 / 夜"
+  // 在任何时候都看得出明显差异；shadows 开关只控制是否投影。
+  const date = resolveWorldLightingDate(worldMetadata, wallClockAt);
+  const hour = date.getHours() + date.getMinutes() / 60 + date.getSeconds() / 3600;
+
   if (tileset) {
     tileset.maximumScreenSpaceError = settings.maxScreenSpaceError;
     tileset.shadows = settings.shadows ? ShadowMode.ENABLED : ShadowMode.DISABLED;
-    if (settings.shadows) {
-      const date = resolveWorldLightingDate(worldMetadata, wallClockAt);
-      const hour = date.getHours() + date.getMinutes() / 60 + date.getSeconds() / 3600;
-      tileset.lightColor = lightColorForHour(hour);
-    } else {
-      tileset.lightColor = new Cartesian3(1, 1, 1);
+    tileset.lightColor = lightColorForHour(hour);
+    const ibl = (tileset as Cesium3DTileset & {
+      imageBasedLighting?: { sphericalHarmonicCoefficients?: Cartesian3[] };
+    }).imageBasedLighting;
+    if (ibl) {
+      ibl.sphericalHarmonicCoefficients = ambientSHForHour(hour);
     }
   }
+
+  scene.backgroundColor = backgroundColorForHour(hour);
 
   if (scene.highDynamicRangeSupported) {
     scene.highDynamicRange = settings.hdr;
@@ -1526,37 +1582,18 @@ export function WorldScene({
     widget.scene.screenSpaceCameraController.enableCollisionDetection = true;
     widget.camera.percentageChanged = 0.0005;
 
-    // 电影级后处理：环境光遮蔽（让墙角/船底/桥下出现暗角）+ 屏幕空间 Bloom（高光耀斑）。
-    // Cesium 的类型声明没把这两个 stage 完全暴露，转成宽类型直接配 uniforms。
-    type CinematicPostProcess = typeof widget.scene.postProcessStages & {
-      ambientOcclusion?: {
-        enabled: boolean;
-        uniforms: Record<string, unknown>;
-      };
-      bloom?: {
-        enabled: boolean;
-        uniforms: Record<string, unknown>;
-      };
+    // 显式关闭 Cesium 自带的屏幕空间后处理：在 HDR + Google Photorealistic 3D Tiles
+    // 上 ambientOcclusion 会让水面出现同心圆波纹、bloom 会把暗区压到全黑亮区炸成红色
+    // 噪点。电影感由"阴影增强 + 时段光照 + 时段背景色"提供，这套 3 件套足够稳定。
+    const cinematicStages = widget.scene.postProcessStages as typeof widget.scene.postProcessStages & {
+      ambientOcclusion?: { enabled: boolean };
+      bloom?: { enabled: boolean };
     };
-    const stages = widget.scene.postProcessStages as CinematicPostProcess;
-    if (stages.ambientOcclusion) {
-      stages.ambientOcclusion.enabled = true;
-      stages.ambientOcclusion.uniforms.intensity = 4.5;
-      stages.ambientOcclusion.uniforms.bias = 0.08;
-      stages.ambientOcclusion.uniforms.lengthCap = 0.32;
-      stages.ambientOcclusion.uniforms.stepSize = 1.95;
-      stages.ambientOcclusion.uniforms.frustumLength = 2000;
-      stages.ambientOcclusion.uniforms.ambientOcclusionOnly = false;
-      stages.ambientOcclusion.uniforms.blurStepSize = 0.6;
+    if (cinematicStages.ambientOcclusion) {
+      cinematicStages.ambientOcclusion.enabled = false;
     }
-    if (stages.bloom) {
-      stages.bloom.enabled = true;
-      stages.bloom.uniforms.contrast = 110;
-      stages.bloom.uniforms.brightness = -0.35;
-      stages.bloom.uniforms.glowOnly = false;
-      stages.bloom.uniforms.delta = 1;
-      stages.bloom.uniforms.sigma = 2.4;
-      stages.bloom.uniforms.stepSize = 1;
+    if (cinematicStages.bloom) {
+      cinematicStages.bloom.enabled = false;
     }
 
     const handler = new ScreenSpaceEventHandler(widget.scene.canvas);
