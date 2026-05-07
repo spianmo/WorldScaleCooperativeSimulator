@@ -99,7 +99,7 @@ export const DEFAULT_LAYERS: SceneLayerState[] = [
 ];
 
 export const DEFAULT_SCENE_SETTINGS: SceneSettings = {
-  shadows: false,
+  shadows: true,
   hdr: true,
   highQualityMaterials: true,
   showGrid: false,

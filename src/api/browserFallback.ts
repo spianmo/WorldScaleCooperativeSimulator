@@ -841,6 +841,20 @@ function registerDefaultHandlers() {
     if (input.time_speed !== undefined) metadata.time_speed = input.time_speed.toFixed(2);
     metadata.updated_at = new Date().toISOString();
 
+    const nextObjects = currentState.world.objects.map((object) => (
+      object.properties?.world_metadata === 'true'
+        ? {
+            ...object,
+            name: input.street_address?.trim() || object.name,
+            description: metadata.description ?? object.description,
+            properties: {
+              ...object.properties,
+              ...metadata,
+            },
+          }
+        : object
+    ));
+
     const nextWeather = input.weather && input.weather.trim() ? input.weather.trim() : undefined;
     const mappedWeather: WorldSnapshot['terrain']['weather'] = nextWeather === 'sunny' || nextWeather === 'clear'
       ? 'sunny'
@@ -871,6 +885,7 @@ function registerDefaultHandlers() {
           ...physics,
           windMps: overrideWind,
         },
+        objects: nextObjects,
         updatedAt: new Date().toISOString(),
       },
       logs: currentState.logs.concat(

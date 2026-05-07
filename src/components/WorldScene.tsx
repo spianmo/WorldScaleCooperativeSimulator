@@ -55,6 +55,7 @@ import unitreeG1Glb from '../../assets/models/baked/unitree_g1.glb';
 import unitreeGo2Glb from '../../assets/models/baked/unitree_go2.glb';
 import parrotBebopGlb from '../../assets/models/Parrot_Bebop.glb';
 import { getWheeledRobotGlbUrl } from '../utils/wheeledRobotMesh';
+import { resolveWorldLightingDate } from '../utils/worldClock';
 
 let wheeledRobotGlbUrl: string | undefined;
 let wheeledRobotGlbPromise: Promise<string> | null = null;
@@ -132,6 +133,7 @@ export interface WorldSceneProps {
   objects?: WorldObject[];
   devices?: SimulationDevice[];
   weather?: WorldSnapshot['terrain'];
+  worldMetadata?: Record<string, string>;
   wallClockAt?: string;
   showAxes?: boolean;
   hidePrimaryDevice?: boolean;
@@ -196,19 +198,26 @@ export function mapDeviceTelemetryPosition(position: SimulationDevice['telemetry
 // Google Photorealistic 3D Tiles 的纹理预烘焙了均匀光照，单靠 Cesium 的太阳
 // 位置不会让贴图随时间变明暗。按当前仿真小时映射出对应日光颜色，强行覆盖纹理。
 function lightColorForHour(hour: number): Cartesian3 {
+  // 黄昏/黑夜的冷蓝紫
   if (hour < 5 || hour >= 20) return new Cartesian3(0.18, 0.2, 0.35);
-  if (hour < 7) return new Cartesian3(1.6, 1.1, 0.8);
+  // 日出
+  if (hour < 7) return new Cartesian3(1.8, 1.05, 0.55);
   if (hour < 10) return new Cartesian3(2.6, 2.4, 2.0);
   if (hour < 14) return new Cartesian3(3.6, 3.5, 3.3);
   if (hour < 17) return new Cartesian3(2.6, 2.4, 2.0);
-  if (hour < 19) return new Cartesian3(2.0, 1.3, 0.7);
-  return new Cartesian3(0.6, 0.5, 0.7);
+  // 17-18 黄金时刻：偏橙金，太阳压低，阴影变长
+  if (hour < 18) return new Cartesian3(2.6, 1.55, 0.65);
+  // 18-19 日落：暖红橙
+  if (hour < 19) return new Cartesian3(2.0, 1.0, 0.4);
+  // 19-20 蓝调时刻
+  return new Cartesian3(0.7, 0.55, 0.75);
 }
 
 function applySceneSettings(
   widget: SceneWidget,
   tileset: Cesium3DTileset | undefined,
   settings: SceneSettings,
+  worldMetadata: Record<string, string> | undefined,
   wallClockAt: string | undefined,
 ) {
   const scene = widget.scene as typeof widget.scene & {
@@ -219,19 +228,21 @@ function applySceneSettings(
   scene.shadowMap.enabled = settings.shadows;
   if (settings.shadows) {
     // globe: false 导致没有地表接阴影，shadowMap 默认参数对城市级 3D Tiles
-    // 几乎不可见，把暗度/尺寸/距离都调到肉眼能分辨的强度。
+    // 几乎不可见，把暗度/尺寸/距离都调到电影级强度（darkness 越小阴影越深）。
     scene.shadowMap.softShadows = true;
-    scene.shadowMap.darkness = 0.7;
-    scene.shadowMap.maximumDistance = 8000;
+    scene.shadowMap.darkness = 0.32;
+    scene.shadowMap.maximumDistance = 10000;
     scene.shadowMap.size = 4096;
+    scene.shadowMap.normalOffset = true;
+    scene.shadowMap.fadingEnabled = false;
   }
 
   if (tileset) {
     tileset.maximumScreenSpaceError = settings.maxScreenSpaceError;
     tileset.shadows = settings.shadows ? ShadowMode.ENABLED : ShadowMode.DISABLED;
     if (settings.shadows) {
-      const date = wallClockAt ? new Date(wallClockAt) : new Date();
-      const hour = Number.isNaN(date.getTime()) ? 12 : date.getHours();
+      const date = resolveWorldLightingDate(worldMetadata, wallClockAt);
+      const hour = date.getHours() + date.getMinutes() / 60 + date.getSeconds() / 3600;
       tileset.lightColor = lightColorForHour(hour);
     } else {
       tileset.lightColor = new Cartesian3(1, 1, 1);
@@ -1292,6 +1303,7 @@ export function WorldScene({
   objects = [],
   devices = [],
   weather = { slopeDeg: 0, weather: 'sunny' },
+  worldMetadata: providedWorldMetadata,
   wallClockAt,
   showAxes = true,
   hidePrimaryDevice = false,
@@ -1342,7 +1354,13 @@ export function WorldScene({
   }));
   const [selectedEntityName, setSelectedEntityName] = useState<string>();
   const [tilesetReady, setTilesetReady] = useState(false);
-  const center = useMemo(() => resolveWorldCenter(objects), [objects]);
+  const worldMetadata = useMemo(() => {
+    if (providedWorldMetadata && Object.keys(providedWorldMetadata).length > 0) {
+      return providedWorldMetadata;
+    }
+    return objects.find((object) => object.properties?.world_metadata === 'true')?.properties ?? {};
+  }, [objects, providedWorldMetadata]);
+  const center = useMemo(() => resolveWorldCenter(objects, worldMetadata), [objects, worldMetadata]);
   const centerKey = `${center.lat.toFixed(6)},${center.lon.toFixed(6)},${Math.round(center.radiusM)}`;
   const cameraKey = `${cameraMode}|${cameraPosition?.join(',') ?? ''}|${cameraTarget?.join(',') ?? ''}|${centerKey}`;
   const minHeightStyle = typeof minHeight === 'number' ? `${minHeight}px` : minHeight;
@@ -1504,6 +1522,39 @@ export function WorldScene({
     widget.scene.backgroundColor = Color.fromCssColorString('#d8e7fa');
     widget.scene.screenSpaceCameraController.enableCollisionDetection = true;
     widget.camera.percentageChanged = 0.0005;
+
+    // 电影级后处理：环境光遮蔽（让墙角/船底/桥下出现暗角）+ 屏幕空间 Bloom（高光耀斑）。
+    // Cesium 的类型声明没把这两个 stage 完全暴露，转成宽类型直接配 uniforms。
+    type CinematicPostProcess = typeof widget.scene.postProcessStages & {
+      ambientOcclusion?: {
+        enabled: boolean;
+        uniforms: Record<string, unknown>;
+      };
+      bloom?: {
+        enabled: boolean;
+        uniforms: Record<string, unknown>;
+      };
+    };
+    const stages = widget.scene.postProcessStages as CinematicPostProcess;
+    if (stages.ambientOcclusion) {
+      stages.ambientOcclusion.enabled = true;
+      stages.ambientOcclusion.uniforms.intensity = 4.5;
+      stages.ambientOcclusion.uniforms.bias = 0.08;
+      stages.ambientOcclusion.uniforms.lengthCap = 0.32;
+      stages.ambientOcclusion.uniforms.stepSize = 1.95;
+      stages.ambientOcclusion.uniforms.frustumLength = 2000;
+      stages.ambientOcclusion.uniforms.ambientOcclusionOnly = false;
+      stages.ambientOcclusion.uniforms.blurStepSize = 0.6;
+    }
+    if (stages.bloom) {
+      stages.bloom.enabled = true;
+      stages.bloom.uniforms.contrast = 110;
+      stages.bloom.uniforms.brightness = -0.35;
+      stages.bloom.uniforms.glowOnly = false;
+      stages.bloom.uniforms.delta = 1;
+      stages.bloom.uniforms.sigma = 2.4;
+      stages.bloom.uniforms.stepSize = 1;
+    }
 
     const handler = new ScreenSpaceEventHandler(widget.scene.canvas);
     handler.setInputAction((movement: { position: Cartesian2 }) => {
@@ -1931,24 +1982,21 @@ export function WorldScene({
     if (!widget || widget.isDestroyed() || !sceneSettings) {
       return;
     }
-    applySceneSettings(widget, tilesetRef.current, sceneSettings, wallClockAt);
+    applySceneSettings(widget, tilesetRef.current, sceneSettings, worldMetadata, wallClockAt);
     widget.scene.requestRender();
-  }, [sceneSettings, tilesetReady, wallClockAt]);
+  }, [sceneSettings, tilesetReady, worldMetadata, wallClockAt]);
 
   // Cesium 默认用 JulianDate.now() 计算太阳位置，会出现"晚上跑应用就没投影"的问题。
   // 把仿真时钟同步过去，让阴影方向跟仿真时间走，不跟系统真实时间走。
   useEffect(() => {
     const widget = widgetRef.current;
-    if (!widget || widget.isDestroyed() || !wallClockAt) {
+    if (!widget || widget.isDestroyed()) {
       return;
     }
-    const date = new Date(wallClockAt);
-    if (Number.isNaN(date.getTime())) {
-      return;
-    }
+    const date = resolveWorldLightingDate(worldMetadata, wallClockAt);
     widget.clock.currentTime = JulianDate.fromDate(date);
     widget.scene.requestRender();
-  }, [wallClockAt, tilesetReady]);
+  }, [wallClockAt, worldMetadata, tilesetReady]);
 
   useEffect(() => {
     const widget = widgetRef.current;

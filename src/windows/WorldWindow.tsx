@@ -66,6 +66,7 @@ import { formatTime } from '../i18n';
 import { useSimulation, useDeviceGroups, DEVICE_GROUP_COLOR_PALETTE } from '../state';
 import type { DeviceGroup } from '../state';
 import type { GoalPriority, SimulationDevice, SimulationGoal, SimulationTask, WorldSnapshotRecord } from '../types';
+import { resolveWorldLightingDate } from '../utils';
 import thumbAutelEvoMaxUrl from '../../assets/design/device-thumb-autel-evo-max-4t.png';
 import thumbDjiMatriceUrl from '../../assets/design/device-thumb-dji-matrice-30t.png';
 import thumbDjiMavicUrl from '../../assets/design/device-thumb-dji-mavic-3e.png';
@@ -142,6 +143,10 @@ function formatDateLabel(iso: string) {
   }
   const weekday = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'][date.getDay()];
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${weekday}`;
+}
+
+function formatWorldClockFromMetadata(worldMetadata: Record<string, string>, wallClockAt: string) {
+  return resolveWorldLightingDate(worldMetadata, wallClockAt);
 }
 
 function toTerminalEntries(entries: ReturnType<typeof useSimulation>['state']['logs']): TerminalEntry[] {
@@ -643,8 +648,9 @@ export function WorldWindow() {
   const gatewayLogs = [...systemLogs.slice(-7), ...gatewayEvents].slice(-10);
   const missionId = 'MISSION-2024-0517-01';
   const worldMetadata = state.world.metadata ?? {};
-  const worldClock = formatClock(state.clock.wallClockAt);
-  const worldDate = formatDateLabel(state.clock.wallClockAt);
+  const displayedWorldDate = formatWorldClockFromMetadata(worldMetadata, state.clock.wallClockAt);
+  const worldClock = formatClock(displayedWorldDate.toISOString());
+  const worldDate = formatDateLabel(displayedWorldDate.toISOString());
   const temperature = worldMetadata.temperature_c ?? '26';
   const humidity = worldMetadata.humidity_percent ?? '45';
   useEffect(() => {
@@ -1345,6 +1351,7 @@ export function WorldWindow() {
             objects={state.world.objects}
             devices={devicesInScene}
             weather={state.world.terrain}
+            worldMetadata={worldMetadata}
             wallClockAt={state.clock.wallClockAt}
             showAxes={false}
             hidePrimaryDevice
