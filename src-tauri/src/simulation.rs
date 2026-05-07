@@ -2,10 +2,40 @@ use crate::llm::{LlmIntentResult, LlmPlannedTask};
 use crate::models::*;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::Duration;
 use uuid::Uuid;
+
+/// 世界生成阶段进度事件，由 `generate_world` 在关键节点回调，
+/// 让前端 loading 弹窗能够实时显示当前正在拉取哪一类数据。
+#[derive(Clone, Debug, Serialize)]
+pub struct WorldGenerationProgress {
+    pub phase: String,
+    pub level: String,
+    pub message: String,
+    pub timestamp_ms: i64,
+}
+
+impl WorldGenerationProgress {
+    fn new(phase: &str, level: &str, message: impl Into<String>) -> Self {
+        Self {
+            phase: phase.to_string(),
+            level: level.to_string(),
+            message: message.into(),
+            timestamp_ms: Utc::now().timestamp_millis(),
+        }
+    }
+}
+
+/// 进度回调类型。`None` 表示不报告进度（保持纯函数行为）。
+pub type ProgressEmitter<'a> = &'a (dyn Fn(WorldGenerationProgress) + Send + Sync);
+
+fn emit_progress(progress: Option<ProgressEmitter<'_>>, phase: &str, level: &str, message: impl Into<String>) {
+    if let Some(callback) = progress {
+        callback(WorldGenerationProgress::new(phase, level, message));
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct OsmStreetDataset {
@@ -58,6 +88,77 @@ struct OverpassElement {
 struct OsmPoint {
     lat: f64,
     lon: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GooglePlacesResponse {
+    #[serde(default)]
+    places: Vec<GooglePlace>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GooglePlace {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(rename = "displayName", default)]
+    display_name: Option<GooglePlaceText>,
+    #[serde(rename = "primaryType", default)]
+    primary_type: Option<String>,
+    #[serde(default)]
+    types: Vec<String>,
+    #[serde(default)]
+    location: Option<GoogleLatLng>,
+    #[serde(rename = "formattedAddress", default)]
+    formatted_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GooglePlaceText {
+    #[serde(default)]
+    text: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct GoogleLatLng {
+    latitude: f64,
+    longitude: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GooglePlacesNearbyRequest<'a> {
+    #[serde(rename = "locationRestriction")]
+    location_restriction: GoogleLocationRestriction,
+    #[serde(rename = "maxResultCount")]
+    max_result_count: u32,
+    #[serde(rename = "rankPreference")]
+    rank_preference: &'a str,
+    #[serde(rename = "includedTypes", skip_serializing_if = "Vec::is_empty")]
+    included_types: Vec<&'a str>,
+    #[serde(rename = "languageCode", skip_serializing_if = "str::is_empty")]
+    language_code: &'a str,
+    #[serde(rename = "regionCode", skip_serializing_if = "str::is_empty")]
+    region_code: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GoogleLocationRestriction {
+    circle: GoogleCircle,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GoogleCircle {
+    center: GoogleLatLng,
+    radius: f64,
+}
+
+impl Serialize for GoogleLatLng {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("LatLng", 2)?;
+        state.serialize_field("latitude", &self.latitude)?;
+        state.serialize_field("longitude", &self.longitude)?;
+        state.end()
+    }
 }
 
 fn now() -> chrono::DateTime<Utc> {
@@ -283,9 +384,14 @@ fn add_world_metadata_object(
     metadata.insert("radius_m".into(), format!("{radius_m:.0}"));
     metadata.insert("data_source".into(), data_source.to_string());
     metadata.insert("data_status".into(), data_status.to_string());
+    metadata.insert("geometry_source".into(), "OSM Overpass".into());
+    metadata.insert(
+        "tiles_source".into(),
+        "Google Photorealistic 3D Tiles".into(),
+    );
     metadata.insert(
         "license".into(),
-        "OpenStreetMap contributors / ODbL".into(),
+        "OSM contributors (ODbL) + Google Maps Platform Terms".into(),
     );
     metadata.insert("created_by".into(), "TerminalLink".into());
     metadata.insert("created_at".into(), now().to_rfc3339());
@@ -431,7 +537,6 @@ fn overpass_element_to_feature(
     size: Vector3,
     radius_m: f32,
 ) -> Option<OsmWorldFeature> {
-    let has_highway = element.tags.contains_key("highway");
     let has_building = element.tags.contains_key("building");
     let has_green = element.tags.contains_key("leisure")
         || element
@@ -444,12 +549,9 @@ fn overpass_element_to_feature(
         .get("natural")
         .map(|value| value == "water")
         .unwrap_or(false);
-    let has_poi = element.tags.contains_key("amenity")
-        || element.tags.contains_key("shop")
-        || element.tags.contains_key("tourism")
-        || element.tags.contains_key("historic");
+    let highway = element.tags.get("highway").cloned();
 
-    if !(has_highway || has_building || has_green || has_water || has_poi) {
+    if !(has_building || has_green || has_water || highway.is_some()) {
         return None;
     }
 
@@ -475,10 +577,10 @@ fn overpass_element_to_feature(
     let (max_x, max_z) = lon_lat_to_world(max_lon, min_lat, center_lon, center_lat, size, radius_m);
     let width = (max_x - min_x).abs().max(2.2);
     let depth = (max_z - min_z).abs().max(2.2);
-    let fallback_name = if has_highway {
-        "OpenStreetMap 道路"
-    } else if has_building {
+    let fallback_name = if has_building {
         "OpenStreetMap 建筑"
+    } else if highway.is_some() {
+        "OSM 道路"
     } else {
         "OpenStreetMap 图层"
     };
@@ -495,84 +597,44 @@ fn overpass_element_to_feature(
     properties.insert("osm_type".into(), element.element_type);
     properties.insert("lat".into(), format!("{:.6}", center_point.lat));
     properties.insert("lon".into(), format!("{:.6}", center_point.lon));
-    if points.len() >= 2 {
-        // 前端 addPolylineForObject 用 'lat,lon;lat,lon;...' 格式还原折线/轮廓。
-        let geometry_str = points
-            .iter()
-            .map(|p| format!("{:.6},{:.6}", p.lat, p.lon))
-            .collect::<Vec<_>>()
-            .join(";");
-        properties.insert("geometry".into(), geometry_str);
-    }
     for (key, value) in &element.tags {
         if matches!(
             key.as_str(),
             "name"
-                | "highway"
                 | "building"
                 | "landuse"
                 | "leisure"
                 | "natural"
                 | "height"
                 | "building:levels"
-                | "amenity"
-                | "shop"
-                | "tourism"
-                | "historic"
+                | "highway"
         ) {
             properties.insert(format!("osm_tag_{key}"), value.clone());
         }
     }
 
-    if has_highway {
-        let (rotation_y, length) = match (points.first(), points.last()) {
-            (Some(first), Some(last)) => {
-                let (first_x, first_z) =
-                    lon_lat_to_world(first.lon, first.lat, center_lon, center_lat, size, radius_m);
-                let (last_x, last_z) =
-                    lon_lat_to_world(last.lon, last.lat, center_lon, center_lat, size, radius_m);
-                let dx = last_x - first_x;
-                let dz = last_z - first_z;
-                (
-                    dz.atan2(dx),
-                    (dx * dx + dz * dz).sqrt().max(width.max(depth)),
-                )
-            }
-            _ => (0.0, width.max(depth)),
-        };
-        properties.insert("material".into(), "asphalt".into());
-        properties.insert("orientation_rad".into(), rotation_y.to_string());
+    if let Some(highway_kind) = highway {
+        // highway 至少要 2 个节点才能画 polyline。Overpass `out geom` 已返回完整顶点，element_type=way。
+        if element.geometry.len() < 2 {
+            return None;
+        }
+        let geometry_str = element
+            .geometry
+            .iter()
+            .map(|p| format!("{:.6},{:.6}", p.lat, p.lon))
+            .collect::<Vec<_>>()
+            .join(";");
+        properties.insert("material".into(), "road".into());
+        properties.insert("geometry".into(), geometry_str);
+        properties.insert("highway_kind".into(), highway_kind);
         return Some(OsmWorldFeature {
             name,
             kind: WorldObjectKind::RoadSegment,
             position: Vector3::new(center_x, 0.0, center_z),
-            size: Vector3::new(length.max(3.0), 0.2, 3.2),
-            tags: vec!["road_segment".into(), "osm".into(), "real_street".into()],
+            size: Vector3::new(width.max(1.0), 0.2, depth.max(1.0)),
+            tags: vec!["road".into(), "osm".into(), "highway".into()],
             walkable: true,
             interactive: false,
-            properties,
-        });
-    }
-
-    if has_poi && !has_building {
-        let category = element
-            .tags
-            .get("amenity")
-            .or_else(|| element.tags.get("shop"))
-            .or_else(|| element.tags.get("tourism"))
-            .or_else(|| element.tags.get("historic"))
-            .cloned()
-            .unwrap_or_else(|| "poi".into());
-        properties.insert("material".into(), "marker".into());
-        properties.insert("poi_category".into(), category);
-        return Some(OsmWorldFeature {
-            name,
-            kind: WorldObjectKind::Landmark,
-            position: Vector3::new(center_x, 0.0, center_z),
-            size: Vector3::new(2.0, 2.0, 2.0),
-            tags: vec!["landmark".into(), "poi".into(), "osm".into()],
-            walkable: true,
-            interactive: true,
             properties,
         });
     }
@@ -616,10 +678,82 @@ fn overpass_element_to_feature(
     })
 }
 
+/// 公共 Overpass 镜像列表。主镜像 504 时按顺序轮询社区维护的备用实例，
+/// 提高世界生成成功率。所有镜像同源 OpenStreetMap planet 数据，无功能差异。
+const OVERPASS_ENDPOINTS: &[&str] = &[
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+];
+
+async fn try_overpass_once(
+    client: &reqwest::Client,
+    url: &str,
+    query: &str,
+) -> Result<OverpassResponse> {
+    let response = client.post(url).body(query.to_string()).send().await?;
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        let snippet: String = text.chars().take(180).collect();
+        return Err(anyhow!("HTTP {status} → {snippet}"));
+    }
+    Ok(response.json::<OverpassResponse>().await?)
+}
+
+async fn fetch_overpass_with_fallback(
+    client: &reqwest::Client,
+    query: &str,
+    progress: Option<ProgressEmitter<'_>>,
+) -> Result<OverpassResponse> {
+    let mut errors: Vec<String> = Vec::with_capacity(OVERPASS_ENDPOINTS.len());
+    for (index, url) in OVERPASS_ENDPOINTS.iter().enumerate() {
+        emit_progress(
+            progress,
+            "osm-mirror-trying",
+            "info",
+            format!(
+                "尝试 Overpass 镜像 ({}/{})：{url}",
+                index + 1,
+                OVERPASS_ENDPOINTS.len()
+            ),
+        );
+        match try_overpass_once(client, url, query).await {
+            Ok(parsed) => {
+                emit_progress(
+                    progress,
+                    "osm-mirror-success",
+                    "info",
+                    format!(
+                        "Overpass 镜像 {url} 返回 {} 条原始要素",
+                        parsed.elements.len()
+                    ),
+                );
+                return Ok(parsed);
+            }
+            Err(error) => {
+                emit_progress(
+                    progress,
+                    "osm-mirror-failed",
+                    "warn",
+                    format!("Overpass 镜像 {url} 失败：{error}"),
+                );
+                errors.push(format!("{url} → {error}"));
+            }
+        }
+    }
+    Err(anyhow!(
+        "所有 Overpass 镜像均失败：\n{}",
+        errors.join("\n")
+    ))
+}
+
 pub async fn fetch_osm_street_dataset(
     input: &GenerateWorldInput,
     size: Vector3,
     radius_m: f32,
+    progress: Option<ProgressEmitter<'_>>,
 ) -> Result<OsmStreetDataset> {
     let street_address = input
         .street_address
@@ -635,6 +769,12 @@ pub async fn fetch_osm_street_dataset(
     let (center_lat, center_lon, display_name) = match (input.center_lat, input.center_lon) {
         (Some(lat), Some(lon)) => (lat, lon, street_address.to_string()),
         _ => {
+            emit_progress(
+                progress,
+                "geocoding",
+                "info",
+                format!("Nominatim 反查地点：{street_address}"),
+            );
             let places = client
                 .get("https://nominatim.openstreetmap.org/search")
                 .query(&[("format", "jsonv2"), ("limit", "1"), ("q", street_address)])
@@ -655,66 +795,84 @@ pub async fn fetch_osm_street_dataset(
         }
     };
 
+    // POI 仍由 Google Places 提供；建筑/绿地/水域以及路网走 OSM Overpass。
+    // 路网含人行道/步道（含 footway/path/cycleway），覆盖 humanoid 设备的可走路径。
     let query = format!(
         r#"
-        [out:json][timeout:18];
+        [out:json][timeout:25];
         (
-          way["highway"](around:{radius},{lat},{lon});
           way["building"](around:{radius},{lat},{lon});
           relation["building"](around:{radius},{lat},{lon});
           way["leisure"~"park|garden"](around:{radius},{lat},{lon});
           way["landuse"~"grass|park|recreation_ground"](around:{radius},{lat},{lon});
           way["natural"="water"](around:{radius},{lat},{lon});
-          node["amenity"](around:{radius},{lat},{lon});
-          node["shop"](around:{radius},{lat},{lon});
-          node["tourism"](around:{radius},{lat},{lon});
-          node["historic"](around:{radius},{lat},{lon});
+          way["highway"~"motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|living_street|pedestrian|footway|path|cycleway"](around:{radius},{lat},{lon});
         );
-        out geom 260;
+        out geom 400;
         "#,
         radius = radius_m.round(),
         lat = center_lat,
         lon = center_lon,
     );
 
-    let response = client
-        .post("https://overpass-api.de/api/interpreter")
-        .body(query)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<OverpassResponse>()
-        .await?;
+    emit_progress(
+        progress,
+        "osm-fetching",
+        "info",
+        format!(
+            "向 OpenStreetMap Overpass 拉取 {:.0} m 半径内的建筑/道路/绿地/水域...",
+            radius_m
+        ),
+    );
+    let response = fetch_overpass_with_fallback(&client, &query, progress).await?;
+    let raw_count = response.elements.len();
     let mut features = response
         .elements
         .into_iter()
         .filter_map(|element| {
             overpass_element_to_feature(element, center_lat, center_lon, size, radius_m)
         })
-        .take(280)
+        .take(400)
         .collect::<Vec<_>>();
 
+    // 路网在视觉/通行决策上和建筑同等重要，提到 TerrainPatch 之前，避免后续裁剪把路截掉。
     let feature_rank = |kind: WorldObjectKind| match kind {
-        WorldObjectKind::RoadSegment => 0,
-        WorldObjectKind::Building => 1,
-        WorldObjectKind::Landmark => 2,
-        _ => 3,
+        WorldObjectKind::Building => 0,
+        WorldObjectKind::Water => 1,
+        WorldObjectKind::RoadSegment => 2,
+        WorldObjectKind::TerrainPatch => 3,
+        _ => 4,
     };
     features.sort_by(|left, right| feature_rank(left.kind).cmp(&feature_rank(right.kind)));
 
-    if features
+    let building_count = features
+        .iter()
+        .filter(|feature| feature.kind == WorldObjectKind::Building)
+        .count();
+    let road_count = features
         .iter()
         .filter(|feature| feature.kind == WorldObjectKind::RoadSegment)
-        .count()
-        < 2
-        || features
-            .iter()
-            .filter(|feature| feature.kind == WorldObjectKind::Building)
-            .count()
-            < 2
-    {
-        return Err(anyhow!("Overpass 返回的道路或建筑数量不足"));
+        .count();
+    let water_count = features
+        .iter()
+        .filter(|feature| feature.kind == WorldObjectKind::Water)
+        .count();
+    let terrain_count = features
+        .iter()
+        .filter(|feature| feature.kind == WorldObjectKind::TerrainPatch)
+        .count();
+    if building_count < 2 {
+        return Err(anyhow!("Overpass 返回的建筑数量不足"));
     }
+
+    emit_progress(
+        progress,
+        "osm-parsed",
+        "info",
+        format!(
+            "OSM 解析完成：建筑 {building_count}、路网 {road_count}、水域 {water_count}、绿地/地形 {terrain_count}（原始 {raw_count} 条）"
+        ),
+    );
 
     Ok(OsmStreetDataset {
         center_lat,
@@ -722,6 +880,347 @@ pub async fn fetch_osm_street_dataset(
         display_name,
         features,
     })
+}
+
+fn google_place_to_feature(
+    place: GooglePlace,
+    center_lat: f64,
+    center_lon: f64,
+    size: Vector3,
+    radius_m: f32,
+) -> Option<OsmWorldFeature> {
+    let location = place.location?;
+    let lat = location.latitude;
+    let lon = location.longitude;
+    let (x, z) = lon_lat_to_world(lon, lat, center_lon, center_lat, size, radius_m);
+
+    let category = place
+        .primary_type
+        .clone()
+        .or_else(|| place.types.first().cloned())
+        .unwrap_or_else(|| "poi".into());
+    let name = place
+        .display_name
+        .as_ref()
+        .map(|t| t.text.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            place
+                .formatted_address
+                .clone()
+                .unwrap_or_else(|| format!("Google POI {category}"))
+        });
+
+    let mut properties = BTreeMap::new();
+    properties.insert("source".into(), "google_places".into());
+    properties.insert("source_name".into(), "Google Places".into());
+    properties.insert("lat".into(), format!("{lat:.6}"));
+    properties.insert("lon".into(), format!("{lon:.6}"));
+    properties.insert("material".into(), "marker".into());
+    properties.insert("poi_category".into(), category);
+    if let Some(id) = place.id {
+        properties.insert("google_place_id".into(), id);
+    }
+    if let Some(addr) = place.formatted_address {
+        properties.insert("formatted_address".into(), addr);
+    }
+    if !place.types.is_empty() {
+        properties.insert("place_types".into(), place.types.join(","));
+    }
+
+    Some(OsmWorldFeature {
+        name,
+        kind: WorldObjectKind::Landmark,
+        position: Vector3::new(x, 0.0, z),
+        size: Vector3::new(2.0, 2.0, 2.0),
+        tags: vec!["landmark".into(), "poi".into(), "google_places".into()],
+        walkable: true,
+        interactive: true,
+        properties,
+    })
+}
+
+/// 把 reqwest 发送/解码错误展开成包含整条 source 链的可读消息，并附上一段提示。
+/// 抽成独立函数是因为 fetch_google_places_pois 内部需要在 send + json 解码两处复用同样的格式化。
+fn format_places_send_error(error: reqwest::Error) -> anyhow::Error {
+    use std::error::Error as _;
+    let mut detail = format!("{error}");
+    let mut source: Option<&(dyn std::error::Error + 'static)> = error.source();
+    while let Some(inner) = source {
+        detail.push_str(" -> ");
+        detail.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    let hint = if error.is_timeout() {
+        "（连接超时；请在设置 dialog 中填写代理地址，或确认网络可达 places.googleapis.com）"
+    } else if error.is_connect() {
+        "（连接失败；多见于网络受限或 DNS 解析不到 Google 域名，请在设置 dialog 中配置代理后重试）"
+    } else if error.is_body() || error.is_decode() {
+        "（读取响应体失败；多见于 h2/连接被对端提前关闭，会自动重试）"
+    } else {
+        "（请检查网络或 API key referer/IP 限制）"
+    };
+    anyhow!("调用 Google Places searchNearby 失败：{detail} {hint}")
+}
+
+/// 调用 Google Places API (New) `places:searchNearby` 拉取以中心点为圆心的 POI。
+/// Places API 单次最多返回 20 条，因此按几个常见类别分多次请求并去重。
+/// `language_code` (BCP-47, e.g. "zh-CN") 控制 displayName 的本地化语言；
+/// `region_code` (CLDR, e.g. "CN") 影响地址格式与本地化偏好。空串表示交给 Google 自适应。
+pub async fn fetch_google_places_pois(
+    api_key: &str,
+    center_lat: f64,
+    center_lon: f64,
+    radius_m: f32,
+    size: Vector3,
+    proxy_url: Option<&str>,
+    language_code: &str,
+    region_code: &str,
+    progress: Option<ProgressEmitter<'_>>,
+) -> Result<Vec<OsmWorldFeature>> {
+    if api_key.trim().is_empty() {
+        return Err(anyhow!("Google Maps API key 为空，无法拉取 POI"));
+    }
+    // Places API 圆形 radius 必须 (0, 50000]
+    let radius = (radius_m as f64).clamp(1.0, 50_000.0);
+    let center = GoogleLatLng {
+        latitude: center_lat,
+        longitude: center_lon,
+    };
+
+    // 几个高频类别，分批请求以突破 20 条上限。空 includedTypes 表示任意类型。
+    let category_batches: [&[&str]; 5] = [
+        &[],
+        &["restaurant", "cafe", "bar", "bakery"],
+        &["tourist_attraction", "museum", "art_gallery", "park"],
+        &["store", "supermarket", "shopping_mall", "convenience_store"],
+        &["hospital", "school", "university", "transit_station"],
+    ];
+
+    // 复用设置 dialog 的代理（tile_cache::effective_proxy_url 已综合 override + 系统代理探测）；
+    // 为空则保留 reqwest 对 HTTPS_PROXY/HTTP_PROXY 的默认行为。
+    // http1_only：reqwest 0.12 + native-tls 在 macOS 上跑 HTTP/2 偶发会出现读 body 时
+    // "end of file before message length reached"（h2 stream 被提前关掉）。Places API
+    // 一次只发 5 个小请求，HTTP/1.1 性能足够，强制 h1 换稳定性。
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(8))
+        .http1_only()
+        .user_agent("TerminalLink-world-simulator/0.1 (Google Places integration)");
+    if let Some(url) = proxy_url.map(str::trim).filter(|s| !s.is_empty()) {
+        let proxy = reqwest::Proxy::all(url)
+            .map_err(|e| anyhow!("解析 proxy_url 失败：{url} ({e})"))?;
+        builder = builder.proxy(proxy);
+    }
+    let client = builder.build()?;
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut features: Vec<OsmWorldFeature> = Vec::new();
+    let total_batches = category_batches.len();
+
+    for (batch_index, batch) in category_batches.iter().enumerate() {
+        let category_label = if batch.is_empty() {
+            "全部类别".to_string()
+        } else {
+            batch.join(", ")
+        };
+        emit_progress(
+            progress,
+            "poi-batch-start",
+            "info",
+            format!(
+                "Google Places 拉取批次 {}/{}：{}",
+                batch_index + 1,
+                total_batches,
+                category_label
+            ),
+        );
+        let body = GooglePlacesNearbyRequest {
+            location_restriction: GoogleLocationRestriction {
+                circle: GoogleCircle {
+                    center,
+                    radius,
+                },
+            },
+            max_result_count: 20,
+            rank_preference: "POPULARITY",
+            included_types: batch.to_vec(),
+            language_code,
+            region_code,
+        };
+
+        // 单批次最多尝试 3 次：覆盖 reqwest::send 网络错误、读 body 时的 IncompleteMessage、
+        // 以及 5xx。4xx 直接抛错，避免在 API key/参数错误时空转。
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut parsed_response: Option<GooglePlacesResponse> = None;
+        let mut last_error: Option<anyhow::Error> = None;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let send_result = client
+                .post("https://places.googleapis.com/v1/places:searchNearby")
+                .header("X-Goog-Api-Key", api_key)
+                .header(
+                    "X-Goog-FieldMask",
+                    "places.id,places.displayName,places.location,places.primaryType,places.types,places.formattedAddress",
+                )
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await;
+
+            let response = match send_result {
+                Ok(resp) => resp,
+                Err(error) => {
+                    let err = format_places_send_error(error);
+                    if attempt < MAX_ATTEMPTS {
+                        emit_progress(
+                            progress,
+                            "poi-batch-retry",
+                            "warn",
+                            format!(
+                                "批次 {}/{} 第 {attempt} 次发送失败，准备重试：{err:#}",
+                                batch_index + 1,
+                                total_batches
+                            ),
+                        );
+                        last_error = Some(err);
+                        tokio::time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                        continue;
+                    }
+                    last_error = Some(err);
+                    break;
+                }
+            };
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                let err = anyhow!(
+                    "Google Places searchNearby 失败：{status}，响应：{text}"
+                );
+                if status.is_server_error() && attempt < MAX_ATTEMPTS {
+                    emit_progress(
+                        progress,
+                        "poi-batch-retry",
+                        "warn",
+                        format!(
+                            "批次 {}/{} 第 {attempt} 次返回 {status}，准备重试",
+                            batch_index + 1,
+                            total_batches
+                        ),
+                    );
+                    last_error = Some(err);
+                    tokio::time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                    continue;
+                }
+                // 4xx 不重试，立即抛错
+                return Err(err);
+            }
+
+            match response.json::<GooglePlacesResponse>().await {
+                Ok(parsed) => {
+                    parsed_response = Some(parsed);
+                    break;
+                }
+                Err(error) => {
+                    let err = format_places_send_error(error);
+                    if attempt < MAX_ATTEMPTS {
+                        emit_progress(
+                            progress,
+                            "poi-batch-retry",
+                            "warn",
+                            format!(
+                                "批次 {}/{} 第 {attempt} 次读取响应体失败，准备重试：{err:#}",
+                                batch_index + 1,
+                                total_batches
+                            ),
+                        );
+                        last_error = Some(err);
+                        tokio::time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                        continue;
+                    }
+                    last_error = Some(err);
+                    break;
+                }
+            }
+        }
+        let parsed: GooglePlacesResponse = match parsed_response {
+            Some(p) => p,
+            None => {
+                return Err(last_error
+                    .unwrap_or_else(|| anyhow!("Google Places 调用失败（未知错误）")))
+            }
+        };
+        let returned = parsed.places.len();
+        let mut added = 0_usize;
+        for place in parsed.places {
+            let dedupe_key = place
+                .id
+                .clone()
+                .or_else(|| place.display_name.as_ref().map(|t| t.text.clone()))
+                .unwrap_or_default();
+            if !dedupe_key.is_empty() && !seen.insert(dedupe_key) {
+                continue;
+            }
+            if let Some(feature) =
+                google_place_to_feature(place, center_lat, center_lon, size, radius_m)
+            {
+                features.push(feature);
+                added += 1;
+            }
+        }
+        emit_progress(
+            progress,
+            "poi-batch-done",
+            "info",
+            format!(
+                "批次 {}/{} 返回 {returned} 条，去重新增 {added}（累计 {}）",
+                batch_index + 1,
+                total_batches,
+                features.len()
+            ),
+        );
+    }
+
+    // 同一栋楼/同一码头里 Google 常常返回多家不同 ID 但坐标相邻（米级偏移）的 POI，
+    // 渲染端 9 px 蓝点叠在一起会形成"巨型蓝色圆斑"。在 by-id 去重之外再按邻近坐标合并。
+    const POI_DEDUPE_MIN_M: f64 = 6.0;
+    let mut kept_coords: Vec<(f64, f64)> = Vec::with_capacity(features.len());
+    features.retain(|feature| {
+        let lat = feature
+            .properties
+            .get("lat")
+            .and_then(|value| value.parse::<f64>().ok());
+        let lon = feature
+            .properties
+            .get("lon")
+            .and_then(|value| value.parse::<f64>().ok());
+        let (Some(lat), Some(lon)) = (lat, lon) else {
+            return true;
+        };
+        let too_close = kept_coords
+            .iter()
+            .any(|(klat, klon)| haversine_m(lat, lon, *klat, *klon) < POI_DEDUPE_MIN_M);
+        if too_close {
+            return false;
+        }
+        kept_coords.push((lat, lon));
+        true
+    });
+
+    Ok(features)
+}
+
+/// 球面 Haversine 距离（米）。用于 POI 邻近去重，精度米级足够。
+fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    const R: f64 = 6_371_000.0;
+    let phi1 = lat1.to_radians();
+    let phi2 = lat2.to_radians();
+    let dphi = (lat2 - lat1).to_radians();
+    let dlambda = (lon2 - lon1).to_radians();
+    let a = (dphi / 2.0).sin().powi(2)
+        + phi1.cos() * phi2.cos() * (dlambda / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+    R * c
 }
 
 pub fn update_settings(
@@ -848,6 +1347,7 @@ pub fn update_settings(
 pub async fn generate_world(
     state: &mut SimulationState,
     input: GenerateWorldInput,
+    progress: Option<ProgressEmitter<'_>>,
 ) -> Result<SimulationState> {
     let seed = input.seed.unwrap_or(state.settings.default_world_seed);
     let name = input
@@ -884,16 +1384,28 @@ pub async fn generate_world(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("OpenStreetMap")
+        .unwrap_or("Google 3D Tiles + OSM Overpass")
         .to_string();
-    if !data_source.eq_ignore_ascii_case("OpenStreetMap") {
-        return Err(anyhow!(
-            "只支持在线 OpenStreetMap 3D 地图渠道，当前数据源不受支持：{data_source}"
-        ));
-    }
-    let dataset = fetch_osm_street_dataset(&input, size, radius_m)
+    emit_progress(
+        progress,
+        "starting",
+        "info",
+        format!(
+            "开始生成「{street_address}」（中心 {center_lat:.6},{center_lon:.6}，半径 {radius_m:.0}m）"
+        ),
+    );
+    // 道路与 POI 走 Google Maps；建筑/绿地/水域基础几何继续走 OSM Overpass。
+    let dataset = fetch_osm_street_dataset(&input, size, radius_m, progress)
         .await
-        .map_err(|error| anyhow!("在线 OpenStreetMap 数据拉取失败：{error}"))?;
+        .map_err(|error| {
+            emit_progress(
+                progress,
+                "osm-failed",
+                "error",
+                format!("OpenStreetMap 基础几何拉取失败：{error}"),
+            );
+            anyhow!("在线 OpenStreetMap 基础几何拉取失败：{error}")
+        })?;
     let display_name = dataset.display_name.clone();
     let mut world = build_osm_world(
         name.clone(),
@@ -906,6 +1418,97 @@ pub async fn generate_world(
         &data_source,
         dataset,
     );
+
+    // 从设置 / fallback 环境变量读取 Google Maps API key。
+    let google_settings = &state.settings.maps.google_maps;
+    let api_key_owned = google_settings
+        .api_key
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let env_name = google_settings.api_key_env.trim();
+            if env_name.is_empty() {
+                None
+            } else {
+                std::env::var(env_name).ok().filter(|s| !s.is_empty())
+            }
+        });
+
+    // 复用 tile_cache 模块固化的代理（来自设置 dialog 的代理地址 / macOS 系统代理探测），
+    // 避免在 maps.toml 里再维护一份重复配置。
+    let proxy_url_owned = crate::tile_cache::effective_proxy_url();
+
+    // 让 Google Places 返回的 displayName 与用户的 UI 语言一致。
+    // regionCode 影响地址格式与本地化偏好；空串表示交给 Google 按 IP/center 自适应。
+    let language_code = state.settings.language.as_str();
+    let region_code = match language_code {
+        "zh-CN" => "CN",
+        "en-US" => "US",
+        _ => "",
+    };
+
+    let mut poi_count = 0_usize;
+    let mut poi_warning: Option<String> = None;
+    let poi_source = if let Some(api_key) = api_key_owned.as_deref() {
+        emit_progress(
+            progress,
+            "poi-start",
+            "info",
+            "开始通过 Google Places 拉取兴趣点 POI...",
+        );
+        match fetch_google_places_pois(
+            api_key,
+            center_lat,
+            center_lon,
+            radius_m,
+            size,
+            proxy_url_owned.as_deref(),
+            language_code,
+            region_code,
+            progress,
+        )
+        .await
+        {
+            Ok(features) => {
+                poi_count = features.len();
+                emit_progress(
+                    progress,
+                    "poi-success",
+                    "info",
+                    format!("Google Places 拉取完成：{poi_count} 条 POI"),
+                );
+                for feature in features {
+                    world.objects.push(WorldObject {
+                        id: Uuid::new_v4(),
+                        name: feature.name,
+                        kind: feature.kind,
+                        position: feature.position,
+                        size: feature.size,
+                        tags: feature.tags,
+                        walkable: feature.walkable,
+                        interactive: feature.interactive,
+                        properties: feature.properties,
+                    });
+                }
+                "Google Places (New)"
+            }
+            Err(error) => {
+                let msg = format!("Google Places 拉取失败：{error:#}");
+                emit_progress(progress, "poi-failed", "warn", msg.clone());
+                poi_warning = Some(msg);
+                "Google Places (failed)"
+            }
+        }
+    } else {
+        let msg = "未配置 Google Maps API key（config/maps.toml 或环境变量），跳过 POI 抓取"
+            .to_string();
+        emit_progress(progress, "poi-skipped", "warn", msg.clone());
+        poi_warning = Some(msg);
+        "skipped (no API key)"
+    };
+
+    finalize_world_metadata(&mut world);
     if let Some(metadata_object) = world.objects.iter_mut().find(|object| {
         object
             .properties
@@ -916,6 +1519,9 @@ pub async fn generate_world(
         metadata_object
             .properties
             .insert("osm_display_name".into(), display_name);
+        metadata_object
+            .properties
+            .insert("poi_source".into(), poi_source.into());
     }
 
     state.world = world;
@@ -925,15 +1531,27 @@ pub async fn generate_world(
         LogLevel::Info,
         "world",
         format!(
-            "已创建实景世界：{}，中心 {:.6},{:.6}，半径 {:.0}m，来源 {}{}",
-            street_address,
-            center_lat,
-            center_lon,
-            radius_m,
-            data_source,
-            "，online_osm",
+            "已创建实景世界：{}，中心 {:.6},{:.6}，半径 {:.0}m，来源 {}，POI {} 个",
+            street_address, center_lat, center_lon, radius_m, data_source, poi_count,
         ),
         Some(state.world.id),
+    );
+    if let Some(message) = poi_warning {
+        push_log(
+            state,
+            LogLevel::Warn,
+            "world",
+            message,
+            Some(state.world.id),
+        );
+    }
+    emit_progress(
+        progress,
+        "completed",
+        "info",
+        format!(
+            "世界生成完成：{street_address}（POI {poi_count} 个）"
+        ),
     );
     Ok(state.clone())
 }
@@ -1076,7 +1694,7 @@ pub fn update_world_settings(
         let ds = input
             .data_source
             .clone()
-            .unwrap_or_else(|| "OpenStreetMap".to_string());
+            .unwrap_or_else(|| "Google 3D Tiles + OSM Overpass".to_string());
         add_world_metadata_object(
             &mut state.world,
             &addr,
@@ -1676,15 +2294,19 @@ fn advance_task_and_device(state: &mut SimulationState, step_seconds: f32) {
             {
                 let weather_scale = climate_motion_scale(state.world.climate, device.kind);
                 let wind = climate_wind_mps(state.world.climate);
+                // 仿真 tick 默认 0.2s,实际位移在世界尺度下肉眼几乎不可见;
+                // 这里给视觉位移一个放大系数,只作用于位置/姿态,电量/进度仍按真实 step_seconds 推进。
+                let visual_step_scale: f32 = 12.0;
                 let step = device.physical_profile.max_speed_mps.max(0.1)
                     * weather_scale
-                    * step_seconds.max(0.1);
+                    * step_seconds.max(0.1)
+                    * visual_step_scale;
                 let heading_rad = device.orientation_deg.to_radians();
                 let drift = if device.kind == DeviceKind::Drone {
                     wind * 0.04
                 } else {
                     wind * 0.006
-                } * step_seconds.max(0.1);
+                } * step_seconds.max(0.1) * visual_step_scale;
                 device.position.x = (device.position.x + heading_rad.cos() * step + drift)
                     .clamp(0.0, state.world.size.x);
                 device.position.z = (device.position.z + heading_rad.sin() * step + drift * 0.35)
@@ -1778,31 +2400,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn overpass_node_without_geometry_uses_lat_lon() {
-        let mut tags = BTreeMap::new();
-        tags.insert("amenity".to_string(), "cafe".to_string());
-        tags.insert("name".to_string(), "街角咖啡".to_string());
-        let element = OverpassElement {
-            id: 42,
-            element_type: "node".to_string(),
-            lat: Some(31.2305),
-            lon: Some(121.4738),
-            tags,
-            geometry: Vec::new(),
+    fn google_place_to_feature_emits_landmark() {
+        let place = GooglePlace {
+            id: Some("places/test123".into()),
+            display_name: Some(GooglePlaceText {
+                text: "测试咖啡".into(),
+            }),
+            primary_type: Some("cafe".into()),
+            types: vec!["cafe".into(), "food".into()],
+            location: Some(GoogleLatLng {
+                latitude: 31.2305,
+                longitude: 121.4738,
+            }),
+            formatted_address: Some("示范街 12 号".into()),
         };
 
-        let feature = overpass_element_to_feature(
-            element,
+        let feature = google_place_to_feature(
+            place,
             31.2304,
             121.4737,
             Vector3::new(100.0, 90.0, 100.0),
             500.0,
         )
-        .expect("node POI should become a landmark feature");
+        .expect("Google Place should become a landmark feature");
 
         assert_eq!(feature.kind, WorldObjectKind::Landmark);
-        assert_eq!(feature.properties.get("source").map(String::as_str), Some("openstreetmap"));
-        assert_eq!(feature.properties.get("osm_type").map(String::as_str), Some("node"));
+        assert_eq!(
+            feature.properties.get("source").map(String::as_str),
+            Some("google_places")
+        );
+        assert_eq!(
+            feature.properties.get("poi_category").map(String::as_str),
+            Some("cafe")
+        );
         assert!(feature.properties.contains_key("lat"));
         assert!(feature.properties.contains_key("lon"));
     }

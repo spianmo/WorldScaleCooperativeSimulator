@@ -57,9 +57,9 @@ export interface SimulationProviderValue {
   setLocale: (locale: LocaleCode) => void;
   setSettings: (patch: Partial<SimulationSettings>) => void;
   setWorld: (world: WorldSnapshot) => void;
-  registerDevice: (device: SimulationDevice) => void;
+  registerDevice: (device: SimulationDevice) => Promise<void>;
   removeDevice: (deviceId: string) => void;
-  updateDevice: (device: SimulationDevice) => void;
+  updateDevice: (device: SimulationDevice) => Promise<void>;
   submitGoal: (goal: SimulationGoal) => void;
   appendLog: (logEntry: Omit<SimulationLogEntry, 'id' | 'timestamp'>) => void;
   setWindows: (windows: SimulationWindowRecord[]) => void;
@@ -387,10 +387,13 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
     commitState((currentState) => replaceWorldInState(currentState, world));
   };
 
-  const registerDevice = (device: SimulationDevice) => {
-    void invokeRegisterDevice(device)
-      .then(updateState)
-      .catch(() => commitState((currentState) => appendDeviceToState(currentState, device)));
+  const registerDevice = async (device: SimulationDevice) => {
+    try {
+      const nextState = await invokeRegisterDevice(device);
+      updateState(nextState);
+    } catch {
+      commitState((currentState) => appendDeviceToState(currentState, device));
+    }
   };
 
   const removeDevice = (deviceId: string) => {
@@ -399,10 +402,13 @@ export function SimulationProvider({ children, initialState }: SimulationProvide
       .catch(() => commitState((currentState) => removeDeviceFromState(currentState, deviceId)));
   };
 
-  const updateDevice = (device: SimulationDevice) => {
-    void invokeUpdateDevice(device)
-      .then(updateState)
-      .catch(() => commitState((currentState) => appendDeviceToState(currentState, device)));
+  const updateDevice = async (device: SimulationDevice) => {
+    try {
+      const nextState = await invokeUpdateDevice(device);
+      updateState(nextState);
+    } catch {
+      commitState((currentState) => appendDeviceToState(currentState, device));
+    }
   };
 
   const submitGoal = (goal: SimulationGoal) => {

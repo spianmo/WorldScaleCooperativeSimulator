@@ -6,6 +6,7 @@ export interface BatteryIconProps {
   height?: number;
   className?: string;
   style?: CSSProperties;
+  charging?: boolean;
 }
 
 export function BatteryIcon({
@@ -14,9 +15,16 @@ export function BatteryIcon({
   height = 11,
   className,
   style,
+  charging = false,
 }: BatteryIconProps) {
   const clamped = Math.max(0, Math.min(100, Number.isFinite(percent) ? percent : 0));
-  const fillColor = clamped <= 15 ? '#d93025' : clamped <= 35 ? '#f29900' : '#1e8e3e';
+  const fillColor = charging
+    ? '#1a73e8'
+    : clamped <= 15
+      ? '#d93025'
+      : clamped <= 35
+        ? '#f29900'
+        : '#1e8e3e';
 
   const capWidth = 2;
   const bodyWidth = width - capWidth;
@@ -27,6 +35,17 @@ export function BatteryIcon({
   const fillWidth = (innerWidth * clamped) / 100;
   const capHeight = Math.max(2, height * 0.5);
   const capY = (height - capHeight) / 2;
+
+  const boltCenterX = bodyWidth / 2;
+  const boltCenterY = height / 2;
+  const boltScaleY = innerHeight / 7;
+  const boltScaleX = boltScaleY * 0.7;
+  const boltPath = `M ${boltCenterX - 0.2 * boltScaleX} ${boltCenterY - 3 * boltScaleY}
+    L ${boltCenterX - 1.6 * boltScaleX} ${boltCenterY + 0.4 * boltScaleY}
+    L ${boltCenterX - 0.2 * boltScaleX} ${boltCenterY + 0.4 * boltScaleY}
+    L ${boltCenterX - 0.6 * boltScaleX} ${boltCenterY + 3 * boltScaleY}
+    L ${boltCenterX + 1.6 * boltScaleX} ${boltCenterY - 0.6 * boltScaleY}
+    L ${boltCenterX + 0.2 * boltScaleX} ${boltCenterY - 0.6 * boltScaleY} Z`;
 
   return (
     <svg
@@ -69,6 +88,19 @@ export function BatteryIcon({
           rx={0.8}
           ry={0.8}
           fill={fillColor}
+        >
+          {charging ? (
+            <animate attributeName="opacity" values="1;0.55;1" dur="1.1s" repeatCount="indefinite" />
+          ) : null}
+        </rect>
+      ) : null}
+      {charging ? (
+        <path
+          d={boltPath}
+          fill="#fbbc04"
+          stroke="#5f4700"
+          strokeWidth={0.4}
+          strokeLinejoin="round"
         />
       ) : null}
     </svg>

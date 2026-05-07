@@ -18,6 +18,16 @@ pub fn set_proxy_override(url: Option<String>) {
     let _ = PROXY_OVERRIDE.set(url);
 }
 
+/// 返回当前生效的上游代理 URL：显式 override 优先；否则回落到 macOS 系统代理探测。
+/// 主要给 simulation 等其他模块复用（避免每个模块各自定义一份代理配置）。
+pub fn effective_proxy_url() -> Option<String> {
+    PROXY_OVERRIDE
+        .get()
+        .cloned()
+        .flatten()
+        .or_else(detect_system_proxy)
+}
+
 async fn http_client() -> &'static Client {
     HTTP_CLIENT
         .get_or_init(|| async {

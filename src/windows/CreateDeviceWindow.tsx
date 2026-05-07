@@ -7,15 +7,17 @@ import {
 } from '@tauri-apps/plugin-geolocation';
 import { type ReactElement, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  FiAlertCircle,
+  FiAlertTriangle,
   FiArrowLeft,
   FiArrowRight,
   FiCamera,
   FiCheck,
-  FiCheckCircle,
   FiCompass,
   FiCpu,
   FiCrosshair,
   FiEye,
+  FiLoader,
   FiNavigation,
   FiPlus,
   FiSearch,
@@ -23,6 +25,7 @@ import {
   FiX,
   FiZap,
 } from 'react-icons/fi';
+import { MdCheckCircle } from 'react-icons/md';
 import { useTranslation } from 'react-i18next';
 import { useSimulation } from '../state';
 import { resolveIpLocation, resolveNativeLocation } from '../api';
@@ -71,9 +74,286 @@ const taskKinds: TaskKind[] = ['inspect', 'photo', 'search', 'move', 'deliver', 
 
 const DEFAULT_LATITUDE = 31.230416;
 const DEFAULT_LONGITUDE = 121.473701;
+const DRONE_ALTITUDE_BUFFER_M = 5;
+const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function isDroneKind(kind: DeviceKind) {
+  return kind === 'drone';
+}
+
+function parseOsmHeightMeters(tags: Record<string, string>): number {
+  const heightStr = tags.height ?? tags['building:height'];
+  const heightNum = Number.parseFloat(heightStr?.replace(/m$/i, '').trim() ?? '');
+  if (Number.isFinite(heightNum) && heightNum > 0) {
+    return heightNum;
+  }
+  const levels = Number.parseFloat(tags['building:levels'] ?? '');
+  if (Number.isFinite(levels) && levels > 0) {
+    return levels * 3.2;
+  }
+  return 0;
+}
+
+interface PointGroundContext {
+  isLand: boolean;
+  buildingHeightM: number;
+  groundElevationM: number;
+  hasGroundElevation: boolean;
+}
+
+// 查询点的地表高程（相对海平面，米）。优先 Open-Meteo（基于 Copernicus DEM 30m），
+// 失败时回落到 USGS 公共代理或返回 null。海洋点通常返回 0。
+async function fetchPointElevation(
+  lat: number,
+  lon: number,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  try {
+    const url = `https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lon}`;
+    const response = await fetch(url, { signal });
+    if (response.ok) {
+      const data = await response.json() as { elevation?: number[] };
+      const value = data.elevation?.[0];
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error;
+    }
+  }
+  return null;
+}
+
+interface OsmSurfaceSignals {
+  hasWaterTag: boolean;
+  hasLandTag: boolean;
+  hasCoastline: boolean;
+  buildingHeightM: number;
+}
+
+async function fetchOsmSurfaceSignals(
+  lat: number,
+  lon: number,
+  signal?: AbortSignal,
+): Promise<OsmSurfaceSignals> {
+  // OSM 中开放海洋/大型海湾通常不存在显式 natural=water polygon，
+  // 它们由 natural=coastline 围出的「负空间」表示。所以仅靠 is_in/水体标签
+  // 会把维港、外海等点错判为陆地；反之内陆某些没显式 landuse 的点又会被错判为水。
+  // 本查询广泛采集陆地/水体/海岸线信号，最终判定交由调用者结合 DEM 高程综合处理。
+  const query = `[out:json][timeout:10];`
+    + `is_in(${lat},${lon})->.a;`
+    + `(`
+    + `  .a;`
+    + `  way(around:8,${lat},${lon})["building"];`
+    + `  way(around:8,${lat},${lon})["highway"];`
+    + `  way(around:8,${lat},${lon})["railway"];`
+    + `  way(around:8,${lat},${lon})["natural"="water"];`
+    + `  relation(around:8,${lat},${lon})["natural"="water"];`
+    + `  way(around:8,${lat},${lon})["water"];`
+    + `  way(around:8,${lat},${lon})["waterway"];`
+    + `  way(around:300,${lat},${lon})["natural"="coastline"];`
+    + `  way(around:60,${lat},${lon})["landuse"];`
+    + `  way(around:60,${lat},${lon})["leisure"];`
+    + `  way(around:60,${lat},${lon})["place"~"city|town|village|hamlet|suburb|neighbourhood|island|islet|locality"];`
+    + `  relation(around:60,${lat},${lon})["place"~"city|town|village|hamlet|suburb|neighbourhood|island|islet|locality"];`
+    + `);`
+    + `out tags;`;
+  const response = await fetch(OVERPASS_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=UTF-8', Accept: 'application/json' },
+    body: query,
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Overpass HTTP ${response.status}`);
+  }
+
+  const data = await response.json() as { elements?: Array<{ tags?: Record<string, string> }> };
+  const elements = data.elements ?? [];
+
+  let hasWaterTag = false;
+  let hasLandTag = false;
+  let hasCoastline = false;
+  let buildingHeightM = 0;
+
+  const landPlaces = new Set([
+    'city', 'town', 'village', 'hamlet', 'suburb', 'neighbourhood',
+    'island', 'islet', 'farm', 'allotments', 'locality', 'isolated_dwelling',
+  ]);
+  const landNatural = new Set([
+    'wood', 'forest', 'beach', 'sand', 'scrub', 'grassland', 'heath',
+    'moor', 'fell', 'tundra', 'bare_rock', 'rock', 'shingle', 'cliff',
+    'glacier', 'volcano', 'peak', 'ridge', 'saddle',
+  ]);
+
+  for (const element of elements) {
+    const tags = element.tags ?? {};
+
+    if (
+      tags.natural === 'water'
+      || tags.natural === 'wetland'
+      || tags.natural === 'bay'
+      || tags.natural === 'strait'
+      || tags.natural === 'fjord'
+      || tags.water === 'lake' || tags.water === 'river' || tags.water === 'pond'
+      || tags.water === 'reservoir' || tags.water === 'basin' || tags.water === 'sea'
+      || tags.water === 'lagoon' || tags.water === 'canal'
+      || tags.waterway === 'riverbank' || tags.waterway === 'dock'
+      || tags.landuse === 'reservoir' || tags.landuse === 'basin'
+      || tags.place === 'sea' || tags.place === 'ocean'
+    ) {
+      hasWaterTag = true;
+    }
+
+    if (tags.natural === 'coastline') {
+      hasCoastline = true;
+    }
+
+    if (
+      (tags.building && tags.building !== 'no')
+      || (tags.highway && tags.highway !== 'no')
+      || (tags.railway && tags.railway !== 'no')
+      || (tags.landuse && tags.landuse !== 'reservoir' && tags.landuse !== 'basin')
+      || (tags.leisure && tags.leisure !== 'swimming_pool' && tags.leisure !== 'water_park')
+      || (tags.place && landPlaces.has(tags.place))
+      || (tags.natural && landNatural.has(tags.natural))
+    ) {
+      hasLandTag = true;
+    }
+
+    if (tags.building && tags.building !== 'no') {
+      const h = parseOsmHeightMeters(tags);
+      if (h > buildingHeightM) {
+        buildingHeightM = h;
+      }
+    }
+  }
+
+  return {
+    hasWaterTag,
+    hasLandTag,
+    hasCoastline,
+    buildingHeightM,
+  };
+}
+
+// 把 OSM 标签信号与 DEM 高程组合判定 land/water。
+// Open-Meteo / Copernicus DEM 在海洋上几乎全部返回 0，在陆地上 > 0（含海平面附近的低洼陆地通常也 > 0.3m）。
+// 内陆湖泊高程不为 0（lake 表面海拔），因此 OSM 显式 water tag 仍是首选信号。
+async function fetchPointSurfaceContext(
+  lat: number,
+  lon: number,
+  signal?: AbortSignal,
+): Promise<PointGroundContext> {
+  const [osmResult, elevation] = await Promise.all([
+    fetchOsmSurfaceSignals(lat, lon, signal),
+    fetchPointElevation(lat, lon, signal).catch(() => null),
+  ]);
+
+  const SEA_LEVEL_EPS_M = 0.5;
+  const isAtSeaLevel = elevation !== null && elevation <= SEA_LEVEL_EPS_M;
+
+  let isLand: boolean;
+  if (osmResult.hasWaterTag) {
+    isLand = false;
+  } else if (osmResult.hasLandTag) {
+    // 当显式陆地标签和「极低高程 + 海岸线」冲突时，仍以 OSM 陆地标签为准
+    // （能避免海岸边缘低洼地被高程信号反向误判为水）。
+    isLand = true;
+  } else if (osmResult.hasCoastline) {
+    // 海岸线附近且无陆地特征：用 DEM 高程作仲裁——海平面附近视作水，否则陆地。
+    isLand = elevation === null ? false : !isAtSeaLevel;
+  } else if (elevation !== null) {
+    // 没有任何 OSM 信号：开放海洋 / 远海点。海平面附近视作水，否则陆地。
+    isLand = !isAtSeaLevel;
+  } else {
+    // OSM 无信号且高程查询失败：保守按陆地处理。
+    isLand = true;
+  }
+
+  return {
+    isLand,
+    buildingHeightM: osmResult.buildingHeightM,
+    groundElevationM: elevation ?? 0,
+    hasGroundElevation: elevation !== null,
+  };
+}
+
+type GroundCtxStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+interface GroundContextState {
+  status: GroundCtxStatus;
+  isLand: boolean | null;
+  buildingHeightM: number;
+  groundElevationM: number;
+  hasGroundElevation: boolean;
+  error?: string;
+}
+
+type PositionState =
+  | 'unknown'           // 地面情况尚未查询完成
+  | 'land'              // 在陆地（含建筑物顶部，可视为可着地）
+  | 'underground'       // 在地下
+  | 'air-over-land'     // 在陆地上空
+  | 'water-surface'     // 在水面
+  | 'underwater'        // 在水底
+  | 'air-over-water';   // 在水面上空
+
+const POSITION_GROUND_EPS_M = 0.5;          // 离地表 ±0.5m 视为贴地/水面
+const POSITION_LAND_SURFACE_BAND_M = 5;     // 离地 0~5m 视为「在地面上」（覆盖各类地面单位身高）
+const POSITION_ROOFTOP_EPS_M = 1.5;         // 离地楼顶 ±1.5m 视为停在楼顶（仍作为 land）
+
+// 海拔（绝对）→ 位置状态。判断基于「相对地表高度」而非绝对海拔。
+function classifyPosition(
+  ctx: GroundContextState,
+  altitudeM: number,
+): PositionState {
+  if (ctx.status !== 'ready' || ctx.isLand === null) {
+    return 'unknown';
+  }
+  // 地表高程：陆地用 DEM 高程，水体（海/湖）若拿不到则按海平面 0 处理。
+  const surfaceElevationM = ctx.hasGroundElevation ? ctx.groundElevationM : 0;
+  const aboveSurface = altitudeM - surfaceElevationM;
+
+  if (ctx.isLand) {
+    if (aboveSurface < -POSITION_GROUND_EPS_M) {
+      return 'underground';
+    }
+    if (aboveSurface <= POSITION_LAND_SURFACE_BAND_M) {
+      return 'land';
+    }
+    if (
+      ctx.buildingHeightM > 0
+      && aboveSurface >= ctx.buildingHeightM - POSITION_ROOFTOP_EPS_M
+      && aboveSurface <= ctx.buildingHeightM + POSITION_ROOFTOP_EPS_M
+    ) {
+      return 'land';
+    }
+    return 'air-over-land';
+  }
+  if (aboveSurface < -POSITION_GROUND_EPS_M) {
+    return 'underwater';
+  }
+  if (aboveSurface <= POSITION_GROUND_EPS_M) {
+    return 'water-surface';
+  }
+  return 'air-over-water';
+}
+
+function isPositionAllowed(state: PositionState, isFlying: boolean): boolean {
+  if (state === 'unknown') {
+    return false;
+  }
+  if (isFlying) {
+    return state === 'land' || state === 'air-over-land' || state === 'air-over-water';
+  }
+  return state === 'land';
 }
 
 const deviceKindMetas: Record<DeviceKind, DeviceKindMeta> = {
@@ -210,6 +490,13 @@ export function CreateDeviceWindow({ editingDeviceId }: CreateDeviceWindowProps 
     return Number(worldMeta.center_lon) || DEFAULT_LONGITUDE;
   });
   const [altitudeM, setAltitudeM] = useState(120);
+  const [groundCtx, setGroundCtx] = useState<GroundContextState>({
+    status: 'idle',
+    isLand: null,
+    buildingHeightM: 0,
+    groundElevationM: 0,
+    hasGroundElevation: false,
+  });
   const [status, setStatus] = useState<string>(t('createDeviceWindow.statusWaiting'));
   const [submitted, setSubmitted] = useState(false);
 
@@ -258,6 +545,96 @@ export function CreateDeviceWindow({ editingDeviceId }: CreateDeviceWindowProps 
     setAltitudeM(Number(py.toFixed(2)));
     setPositionMode('custom');
   }, [editingDevice, state.world.objects, state.world.metadata]);
+
+  const isFlyingDevice = isDroneKind(selectedKind);
+
+  // 在编辑模式下，避免首轮自动海拔覆盖既有设备的位置；其余情形允许自动重置。
+  const skipFirstAutoAltitudeRef = useRef<boolean>(Boolean(editingDeviceId));
+
+  // 查询当前经纬度的 OSM 环境上下文（陆地/水面 + 建筑物高度）。
+  useEffect(() => {
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return;
+    }
+    const controller = new AbortController();
+    let canceled = false;
+    setGroundCtx((prev) => ({
+      status: 'loading',
+      isLand: prev.isLand,
+      buildingHeightM: prev.buildingHeightM,
+      groundElevationM: prev.groundElevationM,
+      hasGroundElevation: prev.hasGroundElevation,
+      error: undefined,
+    }));
+    const timer = window.setTimeout(async () => {
+      try {
+        const ctx = await fetchPointSurfaceContext(latitude, longitude, controller.signal);
+        if (canceled) {
+          return;
+        }
+        setGroundCtx({
+          status: 'ready',
+          isLand: ctx.isLand,
+          buildingHeightM: ctx.buildingHeightM,
+          groundElevationM: ctx.groundElevationM,
+          hasGroundElevation: ctx.hasGroundElevation,
+        });
+      } catch (error) {
+        if (canceled || (error instanceof DOMException && error.name === 'AbortError')) {
+          return;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        setGroundCtx({
+          status: 'error',
+          isLand: null,
+          buildingHeightM: 0,
+          groundElevationM: 0,
+          hasGroundElevation: false,
+          error: message,
+        });
+      }
+    }, 600);
+    return () => {
+      canceled = true;
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [latitude, longitude]);
+
+  // 根据设备类型与位置上下文，自动调整海拔默认值。
+  // 海拔为相对海平面的绝对值，地表海拔来自 DEM 查询：
+  // - 陆地设备：地表海拔 + 设备身高（贴地）
+  // - 飞行设备：地表海拔 + max(默认作业高度, 建筑高度 + 缓冲)（飞越建筑）
+  useEffect(() => {
+    if (skipFirstAutoAltitudeRef.current) {
+      skipFirstAutoAltitudeRef.current = false;
+      return;
+    }
+    if (groundCtx.status !== 'ready') {
+      return;
+    }
+    const surfaceElev = groundCtx.hasGroundElevation ? groundCtx.groundElevationM : 0;
+    if (!isFlyingDevice) {
+      const deviceHeight = meta.defaultAltitudeM > 0 ? meta.defaultAltitudeM : 0;
+      setAltitudeM(Number((surfaceElev + deviceHeight).toFixed(2)));
+      return;
+    }
+    {
+      const fallback = meta.defaultAltitudeM > 0 ? meta.defaultAltitudeM : 60;
+      const aboveBuilding = groundCtx.buildingHeightM + DRONE_ALTITUDE_BUFFER_M;
+      const next = surfaceElev + Math.max(fallback, Math.round(aboveBuilding));
+      setAltitudeM(Number(next.toFixed(2)));
+    }
+  }, [
+    isFlyingDevice,
+    meta.defaultAltitudeM,
+    groundCtx.status,
+    groundCtx.buildingHeightM,
+    groundCtx.groundElevationM,
+    groundCtx.hasGroundElevation,
+    latitude,
+    longitude,
+  ]);
 
   const applyKindDefaults = (kind: DeviceKind) => {
     const profile = defaultProfile(kind, state.physicalRules);
@@ -664,13 +1041,55 @@ export function CreateDeviceWindow({ editingDeviceId }: CreateDeviceWindowProps 
     setStatus(t(`createDeviceWindow.steps.step${next}`));
   };
 
+  const positionState = classifyPosition(groundCtx, altitudeM);
+  const isGroundContextPending = groundCtx.status !== 'ready';
+  const isPositionInvalid = positionState !== 'unknown' && !isPositionAllowed(positionState, isFlyingDevice);
+
+  const positionRejectKey = (() => {
+    if (!isPositionInvalid) {
+      return undefined;
+    }
+    if (isFlyingDevice) {
+      switch (positionState) {
+        case 'water-surface':
+          return 'createDeviceWindow.groundContext.rejectDroneOnWater';
+        case 'underwater':
+          return 'createDeviceWindow.groundContext.rejectDroneUnderwater';
+        case 'underground':
+          return 'createDeviceWindow.groundContext.rejectDroneUnderground';
+        default:
+          return 'createDeviceWindow.groundContext.rejectInvalid';
+      }
+    }
+    switch (positionState) {
+      case 'water-surface':
+      case 'underwater':
+        return 'createDeviceWindow.groundContext.rejectGroundOnWater';
+      case 'air-over-land':
+      case 'air-over-water':
+        return 'createDeviceWindow.groundContext.rejectGroundInAir';
+      case 'underground':
+        return 'createDeviceWindow.groundContext.rejectGroundUnderground';
+      default:
+        return 'createDeviceWindow.groundContext.rejectInvalid';
+    }
+  })();
+
   const handleNext = () => {
+    if (currentStep >= 3 && isPositionInvalid && positionRejectKey) {
+      setStatus(t(positionRejectKey));
+      return;
+    }
+    if (currentStep >= 3 && isGroundContextPending) {
+      setStatus(t('createDeviceWindow.groundContext.waitingResult'));
+      return;
+    }
     if (currentStep < 4) {
       goToStep((currentStep + 1) as StepId);
       return;
     }
 
-    submit();
+    void submit();
   };
 
   const handlePrev = () => {
@@ -681,9 +1100,17 @@ export function CreateDeviceWindow({ editingDeviceId }: CreateDeviceWindowProps 
     goToStep((currentStep - 1) as StepId);
   };
 
-  const submit = () => {
+  const submit = async () => {
     if (capabilityTags.length === 0) {
       setStatus(t('createDeviceWindow.statusMissingCapabilities'));
+      return;
+    }
+    if (isPositionInvalid && positionRejectKey) {
+      setStatus(t(positionRejectKey));
+      return;
+    }
+    if (isGroundContextPending) {
+      setStatus(t('createDeviceWindow.groundContext.waitingResult'));
       return;
     }
 
@@ -739,9 +1166,9 @@ export function CreateDeviceWindow({ editingDeviceId }: CreateDeviceWindowProps 
         };
 
     if (editingDevice) {
-      updateDevice(enriched);
+      await updateDevice(enriched);
     } else {
-      registerDevice(enriched);
+      await registerDevice(enriched);
     }
     appendLog({
       level: 'info',
@@ -1068,28 +1495,89 @@ export function CreateDeviceWindow({ editingDeviceId }: CreateDeviceWindowProps 
                 </header>
                 <div className="create-device-section-body">
                   <div className="create-device-position">
-                    <div className="create-device-position-modes">
-                      {(['recommended', 'custom', 'current'] as PositionMode[]).map((mode) => (
-                        <button
-                          key={mode}
-                          type="button"
-                          aria-pressed={positionMode === mode}
-                          className={`create-device-position-mode ${
-                            positionMode === mode ? 'create-device-position-mode-active' : ''
-                          }`}
-                          onClick={() => {
-                            if (mode === 'recommended') {
-                              setRecommendedPosition();
-                            } else if (mode === 'current') {
-                              void setCurrentPosition();
-                            } else {
-                              setPositionMode('custom');
+                    <div className="create-device-position-header">
+                      <div className="create-device-position-modes">
+                        {(['recommended', 'custom', 'current'] as PositionMode[]).map((mode) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            aria-pressed={positionMode === mode}
+                            className={`create-device-position-mode ${
+                              positionMode === mode ? 'create-device-position-mode-active' : ''
+                            }`}
+                            onClick={() => {
+                              if (mode === 'recommended') {
+                                setRecommendedPosition();
+                              } else if (mode === 'current') {
+                                void setCurrentPosition();
+                              } else {
+                                setPositionMode('custom');
+                              }
+                            }}
+                          >
+                            {t(`createDeviceWindow.positionMode.${mode}`)}
+                          </button>
+                        ))}
+                      </div>
+                      {(() => {
+                        let tone: 'ok' | 'warn' | 'error' | 'info';
+                        let message: string;
+                        if (groundCtx.status === 'loading' || groundCtx.status === 'idle') {
+                          tone = 'info';
+                          message = t('createDeviceWindow.groundContext.loading');
+                        } else if (groundCtx.status === 'error') {
+                          tone = 'warn';
+                          message = t('createDeviceWindow.groundContext.queryFailed', {
+                            message: groundCtx.error ?? t('createDeviceWindow.geoError.unknown'),
+                          });
+                        } else {
+                          const surfaceElevM = groundCtx.hasGroundElevation ? groundCtx.groundElevationM : 0;
+                          const aboveSurfaceText = Math.max(0, altitudeM - surfaceElevM).toFixed(1);
+                          const positionMessage = (() => {
+                            switch (positionState) {
+                              case 'land':
+                                return groundCtx.buildingHeightM > 0
+                                  ? t('createDeviceWindow.groundContext.positionLandWithBuilding', {
+                                      height: groundCtx.buildingHeightM.toFixed(1),
+                                    })
+                                  : t('createDeviceWindow.groundContext.positionLand');
+                              case 'underground':
+                                return t('createDeviceWindow.groundContext.positionUnderground');
+                              case 'air-over-land':
+                                return t('createDeviceWindow.groundContext.positionAirOverLand', { altitude: aboveSurfaceText });
+                              case 'water-surface':
+                                return t('createDeviceWindow.groundContext.positionWaterSurface');
+                              case 'underwater':
+                                return t('createDeviceWindow.groundContext.positionUnderwater');
+                              case 'air-over-water':
+                                return t('createDeviceWindow.groundContext.positionAirOverWater', { altitude: aboveSurfaceText });
+                              default:
+                                return t('createDeviceWindow.groundContext.loading');
                             }
-                          }}
-                        >
-                          {t(`createDeviceWindow.positionMode.${mode}`)}
-                        </button>
-                      ))}
+                          })();
+                          if (isPositionInvalid && positionRejectKey) {
+                            tone = 'error';
+                            message = `${positionMessage} · ${t(positionRejectKey)}`;
+                          } else {
+                            tone = 'ok';
+                            message = positionMessage;
+                          }
+                        }
+                        const Icon =
+                          tone === 'ok'
+                            ? MdCheckCircle
+                            : tone === 'warn'
+                              ? FiAlertTriangle
+                              : tone === 'error'
+                                ? FiAlertCircle
+                                : FiLoader;
+                        return (
+                          <div className="create-device-ground-context" data-tone={tone} title={message}>
+                            <Icon aria-hidden="true" className="create-device-ground-context-icon" />
+                            <span>{message}</span>
+                          </div>
+                        );
+                      })()}
                     </div>
                     <div className="create-device-position-grid">
                       <NumberField
@@ -1123,6 +1611,23 @@ export function CreateDeviceWindow({ editingDeviceId }: CreateDeviceWindowProps 
                         min={0}
                         max={2_000}
                         step={0.1}
+                        disabled={!isFlyingDevice}
+                        hint={
+                          !isFlyingDevice
+                            ? t('createDeviceWindow.altitudeHint.groundLocked')
+                            : groundCtx.status === 'ready'
+                              ? groundCtx.buildingHeightM > 0
+                                ? t('createDeviceWindow.altitudeHint.aboveBuilding', {
+                                    height: groundCtx.buildingHeightM.toFixed(1),
+                                    buffer: DRONE_ALTITUDE_BUFFER_M,
+                                  })
+                                : t('createDeviceWindow.altitudeHint.openSky')
+                              : groundCtx.status === 'loading'
+                                ? t('createDeviceWindow.altitudeHint.querying')
+                                : groundCtx.status === 'error'
+                                  ? t('createDeviceWindow.altitudeHint.queryFailed')
+                                  : undefined
+                        }
                         onChange={setAltitudeM}
                       />
                       <div className="create-device-map-preview">
@@ -1147,7 +1652,7 @@ export function CreateDeviceWindow({ editingDeviceId }: CreateDeviceWindowProps 
               {currentStep === 4 ? (
                 <div className="create-device-confirm" data-active="true">
                   <div className="create-device-confirm-icon">
-                    <FiCheckCircle />
+                    <MdCheckCircle />
                   </div>
                   <div className="create-device-confirm-body">
                     <strong>{t('createDeviceWindow.confirm.title', { name: finalDeviceName })}</strong>
@@ -1226,7 +1731,19 @@ export function CreateDeviceWindow({ editingDeviceId }: CreateDeviceWindowProps 
               type="button"
               className="create-device-primary-button"
               onClick={handleNext}
-              disabled={submitted && currentStep === 4}
+              disabled={
+                (submitted && currentStep === 4)
+                || (currentStep >= 3 && (isPositionInvalid || isGroundContextPending))
+              }
+              title={
+                currentStep >= 3
+                  ? isPositionInvalid && positionRejectKey
+                    ? t(positionRejectKey)
+                    : isGroundContextPending
+                      ? t('createDeviceWindow.groundContext.waitingResult')
+                      : undefined
+                  : undefined
+              }
             >
               {currentStep === 4 ? <FiCpu /> : null}
               {nextLabel}
@@ -1246,12 +1763,14 @@ interface NumberFieldProps {
   min: number;
   max: number;
   step?: number;
+  disabled?: boolean;
+  hint?: string;
   onChange: (value: number) => void;
 }
 
-function NumberField({ label, suffix, value, min, max, step = 1, onChange }: NumberFieldProps) {
+function NumberField({ label, suffix, value, min, max, step = 1, disabled, hint, onChange }: NumberFieldProps) {
   return (
-    <label className="create-device-field">
+    <label className="create-device-field" data-disabled={disabled ? 'true' : 'false'}>
       <span>{label}</span>
       <div className="create-device-field-input">
         <input
@@ -1260,7 +1779,12 @@ function NumberField({ label, suffix, value, min, max, step = 1, onChange }: Num
           min={min}
           max={max}
           step={step}
+          disabled={disabled}
+          readOnly={disabled}
           onChange={(event) => {
+            if (disabled) {
+              return;
+            }
             const next = Number(event.target.value);
             if (Number.isFinite(next)) {
               onChange(clamp(next, min, max));
@@ -1269,6 +1793,7 @@ function NumberField({ label, suffix, value, min, max, step = 1, onChange }: Num
         />
         {suffix ? <em>{suffix}</em> : null}
       </div>
+      {hint ? <small className="create-device-field-hint">{hint}</small> : null}
     </label>
   );
 }

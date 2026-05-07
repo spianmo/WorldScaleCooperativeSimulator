@@ -15,10 +15,11 @@ use models::{
     SaveSnapshotInput, SavedPath, SettingsPatch, SimulationState, SubmitGoalInput, TickInput,
     UpdateDeviceInput, UpdateWorldSettingsInput, WorldSnapshotRecord,
 };
+use simulation::WorldGenerationProgress;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tile_cache::{SweepReport, TileCacheConfig, TileCacheStats};
 use uuid::Uuid;
 
@@ -168,8 +169,13 @@ fn update_settings(
     with_state(&store, |state| simulation::update_settings(state, patch))
 }
 
+/// 世界生成实时进度事件名。前端 CreateWorldWindow 在调用 `generate_world`
+/// 期间订阅该事件以在 loading 框中追加日志。
+const WORLD_GENERATION_PROGRESS_EVENT: &str = "world-generation-progress";
+
 #[tauri::command]
 async fn generate_world(
+    app: AppHandle,
     store: State<'_, AppStore>,
     input: GenerateWorldInput,
 ) -> Result<SimulationState, String> {
@@ -178,9 +184,30 @@ async fn generate_world(
         .lock()
         .map_err(|_| "仿真状态锁已被污染".to_string())?
         .clone();
-    simulation::generate_world(&mut next_state, input)
-        .await
-        .map_err(|error| error.to_string())?;
+    let emit_app = app.clone();
+    let emitter = move |progress: WorldGenerationProgress| {
+        // 推送失败仅日志告警，不阻塞主流程；通常只在窗口已经关闭时发生。
+        if let Err(error) = emit_app.emit(WORLD_GENERATION_PROGRESS_EVENT, &progress) {
+            eprintln!(
+                "[generate_world] emit progress failed phase={} error={}",
+                progress.phase, error
+            );
+        }
+    };
+    let result = simulation::generate_world(&mut next_state, input, Some(&emitter)).await;
+    if let Err(error) = result {
+        let message = error.to_string();
+        let _ = app.emit(
+            WORLD_GENERATION_PROGRESS_EVENT,
+            &WorldGenerationProgress {
+                phase: "failed".into(),
+                level: "error".into(),
+                message: message.clone(),
+                timestamp_ms: Utc::now().timestamp_millis(),
+            },
+        );
+        return Err(message);
+    }
     persist_next_state(&store, next_state)
 }
 

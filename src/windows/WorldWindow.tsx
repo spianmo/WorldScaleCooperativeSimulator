@@ -39,6 +39,7 @@ import {
   FiWind,
   FiWifi,
   FiX,
+  FiZap,
 } from 'react-icons/fi';
 import {
   GiDeliveryDrone,
@@ -128,12 +129,7 @@ function formatClock(iso: string) {
   if (Number.isNaN(date.getTime())) {
     return DESIGN_CLOCK;
   }
-  return date.toLocaleTimeString('zh-CN', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  return formatTime(date);
 }
 
 function formatDateLabel(iso: string) {
@@ -159,8 +155,13 @@ function toTerminalEntries(entries: ReturnType<typeof useSimulation>['state']['l
   }));
 }
 
-function formatPosition(device: SimulationDevice) {
-  return device.telemetry.position.map((value) => value.toFixed(1)).join(', ');
+function formatGeoPosition(geo: { lon: number; lat: number; height: number }) {
+  const lonDir = geo.lon >= 0 ? 'E' : 'W';
+  const latDir = geo.lat >= 0 ? 'N' : 'S';
+  const lonStr = Math.abs(geo.lon).toFixed(3);
+  const latStr = Math.abs(geo.lat).toFixed(3);
+  const altStr = `${Math.round(geo.height)}m`;
+  return `${lonStr}°${lonDir} ${latStr}°${latDir} · ${altStr}`;
 }
 
 function deviceIcon(kind: SimulationDevice['kind']) {
@@ -483,6 +484,7 @@ export function WorldWindow() {
     setLocale,
     setThemeMode,
     removeDevice,
+    updateDevice,
   } = useSimulation();
   const [selectedDeviceId, setSelectedDeviceId] = useState(state.devices[0]?.id ?? '');
   const [deviceContextMenu, setDeviceContextMenu] = useState<{
@@ -511,6 +513,71 @@ export function WorldWindow() {
   }, [deviceContextMenu]);
   const [viewMode, setViewMode] = useState<ViewMode>('global');
   const [humanRoamStart, setHumanRoamStart] = useState<{ lon: number; lat: number; headingDeg?: number } | null>(null);
+  const [chargingDevices, setChargingDevices] = useState<Record<string, { startedAt: number; startPercent: number; currentPercent: number }>>({});
+  const chargingDevicesRef = useRef(chargingDevices);
+  chargingDevicesRef.current = chargingDevices;
+  const devicesRef = useRef(state.devices);
+  devicesRef.current = state.devices;
+  const updateDeviceRef = useRef(updateDevice);
+  updateDeviceRef.current = updateDevice;
+  const hasChargingDevices = Object.keys(chargingDevices).length > 0;
+  useEffect(() => {
+    if (!hasChargingDevices) {
+      return undefined;
+    }
+    const handle = window.setInterval(() => {
+      const now = Date.now();
+      const completedIds: string[] = [];
+      const previous = chargingDevicesRef.current;
+      let mutated = false;
+      const next: typeof previous = {};
+      for (const [deviceId, entry] of Object.entries(previous)) {
+        const elapsed = now - entry.startedAt;
+        const progress = Math.min(1, elapsed / 5000);
+        if (progress >= 1) {
+          completedIds.push(deviceId);
+          mutated = true;
+          continue;
+        }
+        const newPercent = entry.startPercent + (100 - entry.startPercent) * progress;
+        if (Math.abs(newPercent - entry.currentPercent) > 0.05) {
+          next[deviceId] = { ...entry, currentPercent: newPercent };
+          mutated = true;
+        } else {
+          next[deviceId] = entry;
+        }
+      }
+      if (mutated) {
+        setChargingDevices(next);
+      }
+      completedIds.forEach((deviceId) => {
+        const device = devicesRef.current.find((item) => item.id === deviceId);
+        if (device) {
+          void updateDeviceRef.current({
+            ...device,
+            telemetry: { ...device.telemetry, batteryPercent: 100 },
+          });
+        }
+      });
+    }, 100);
+    return () => window.clearInterval(handle);
+  }, [hasChargingDevices]);
+  const startChargingDevice = useCallback((device: SimulationDevice) => {
+    setChargingDevices((prev) => {
+      if (prev[device.id]) {
+        return prev;
+      }
+      const startPercent = Math.max(0, Math.min(100, device.telemetry.batteryPercent));
+      return {
+        ...prev,
+        [device.id]: {
+          startedAt: Date.now(),
+          startPercent,
+          currentPercent: startPercent,
+        },
+      };
+    });
+  }, []);
   const [query, setQuery] = useState('');
   const [groupFilter, setGroupFilter] = useState<'all' | 'unassigned' | string>('all');
   const [groupPanelOpen, setGroupPanelOpen] = useState(false);
@@ -529,6 +596,10 @@ export function WorldWindow() {
   const decisionStages = useMemo(
     () => DECISION_STAGE_IDS.map((id) => ({ id, label: t(`worldWindowExtra.decisionStages.${id}`) })),
     [t],
+  );
+  const worldCenter = useMemo(
+    () => resolveWorldCenter(state.world.objects, state.world.metadata),
+    [state.world.objects, state.world.metadata],
   );
   const [taskInput, setTaskInput] = useState(() => t(TASK_EXAMPLE_KEYS[0]));
   const [priority, setPriority] = useState<'normal' | 'high' | 'urgent'>('high');
@@ -1072,6 +1143,12 @@ export function WorldWindow() {
             {filteredDevices.length ? filteredDevices.map((device) => {
               const thumbUrl = deviceThumbUrl(device);
               const ownerGroup = groupOfDeviceMap.get(device.id);
+              const chargingEntry = chargingDevices[device.id];
+              const isCharging = Boolean(chargingEntry);
+              const displayBatteryPercent = isCharging
+                ? chargingEntry.currentPercent
+                : device.telemetry.batteryPercent;
+              const showChargeChip = device.status === 'idle' && (isCharging || displayBatteryPercent < 100);
               return (
                 <button
                   key={device.id}
@@ -1109,10 +1186,40 @@ export function WorldWindow() {
                     <strong>{device.name}</strong>
                     <small>{deviceShortType(device.kind, t)}</small>
                     <small className="terminal-device-battery">
-                      <BatteryIcon percent={device.telemetry.batteryPercent} />
-                      <span>{Math.round(device.telemetry.batteryPercent)}%</span>
+                      <BatteryIcon percent={displayBatteryPercent} charging={isCharging} />
+                      <span>{Math.round(displayBatteryPercent)}%</span>
+                      {showChargeChip ? (
+                        <span
+                          className={`terminal-device-charge-chip ${isCharging ? 'terminal-device-charge-chip-active' : ''}`}
+                          role="button"
+                          tabIndex={isCharging ? -1 : 0}
+                          aria-disabled={isCharging || undefined}
+                          aria-label={t('worldWindowExtra.sidebar.chargeAria', { name: device.name })}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (!isCharging) {
+                              startChargingDevice(device);
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if ((event.key === 'Enter' || event.key === ' ') && !isCharging) {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              startChargingDevice(device);
+                            }
+                          }}
+                        >
+                          <FiZap />
+                          {isCharging
+                            ? t('worldWindowExtra.sidebar.chargingChip')
+                            : t('worldWindowExtra.sidebar.chargeChip')}
+                        </span>
+                      ) : null}
                     </small>
-                    <small><FiMapPin /> {t('worldWindowExtra.sidebar.positionShort', { value: formatPosition(device) })}</small>
+                    <small title={formatGeoPosition(deviceGeoPosition(worldCenter, device))}>
+                      <FiMapPin /> {t('worldWindowExtra.sidebar.positionShort', { value: formatGeoPosition(deviceGeoPosition(worldCenter, device)) })}
+                    </small>
                   </span>
                   <span className="terminal-device-meta">
                     <span

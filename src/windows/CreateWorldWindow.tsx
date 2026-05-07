@@ -1,6 +1,7 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { type ReactElement, useEffect, useMemo, useRef, useState } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import {
@@ -33,6 +34,35 @@ type WeatherPreset = 'sunny' | 'cloudy' | 'overcast' | 'light_rain' | 'heavy_rai
 type TerrainSource = 'srtm' | 'aster' | 'custom_dem';
 type ViewMode = 'satellite' | 'street' | 'terrain' | 'building' | 'night';
 
+type ProgressLevel = 'info' | 'warn' | 'error';
+
+interface WorldGenerationProgressPayload {
+  phase: string;
+  level: string;
+  message: string;
+  timestamp_ms: number;
+}
+
+interface ProgressLogEntry {
+  id: number;
+  phase: string;
+  level: ProgressLevel;
+  message: string;
+  timestampMs: number;
+}
+
+const WORLD_GENERATION_PROGRESS_EVENT = 'world-generation-progress';
+
+function normalizeProgressLevel(level: string): ProgressLevel {
+  return level === 'warn' || level === 'error' ? level : 'info';
+}
+
+function formatProgressTimestamp(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 function buildDefaultStreetSpec(t: (key: string) => string) {
   return {
     name: t('createWorldWindow.defaultSpec.name'),
@@ -43,7 +73,7 @@ function buildDefaultStreetSpec(t: (key: string) => string) {
     latitude: 22.293410,
     longitude: 114.169920,
     radiusM: 150,
-    dataSource: 'Google Photorealistic 3D Tiles',
+    dataSource: 'Google 3D Tiles + OSM Overpass',
     previewQuality: 'high' as const,
     worldTime: '2024-05-24 14:32:18',
     weather: 'sunny' as WeatherPreset,
@@ -276,6 +306,10 @@ export function CreateWorldWindow() {
   const [isDrawingMode, setIsDrawingMode] = useState(false);
   const [errorDetail, setErrorDetail] = useState<{ summary: string; detail: string } | null>(null);
   const [currentZoom, setCurrentZoom] = useState<number>(() => zoomFromRadius(150));
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [progressLogs, setProgressLogs] = useState<ProgressLogEntry[]>([]);
+  const progressLogContainerRef = useRef<HTMLDivElement | null>(null);
+  const progressLogIdRef = useRef(0);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const googleMapRef = useRef<GoogleMapsMap | null>(null);
   const selectionRectangleRef = useRef<GoogleMapsRectangle | null>(null);
@@ -482,6 +516,44 @@ export function CreateWorldWindow() {
   }, [viewMode]);
 
   useEffect(() => {
+    if (!isGenerating || !isTauri()) {
+      return;
+    }
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+    void listen<WorldGenerationProgressPayload>(WORLD_GENERATION_PROGRESS_EVENT, (event) => {
+      const payload = event.payload;
+      const id = ++progressLogIdRef.current;
+      setProgressLogs((logs) => [
+        ...logs,
+        {
+          id,
+          phase: payload.phase,
+          level: normalizeProgressLevel(payload.level),
+          message: payload.message,
+          timestampMs: payload.timestamp_ms || Date.now(),
+        },
+      ]);
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [isGenerating]);
+
+  useEffect(() => {
+    const el = progressLogContainerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [progressLogs]);
+
+  useEffect(() => {
     const map = googleMapRef.current;
     const rectangle = selectionRectangleRef.current;
     if (!map || !rectangle) {
@@ -646,13 +718,25 @@ export function CreateWorldWindow() {
       center_lat: latitude,
       center_lon: longitude,
       radius_m: radiusM,
-      data_source: 'OpenStreetMap',
+      data_source: 'Google 3D Tiles + OSM Overpass',
       preview_quality: previewQuality,
     };
 
     setStatus(t('createWorldWindow.statusGenerating'));
+    progressLogIdRef.current = 0;
+    setProgressLogs([
+      {
+        id: 0,
+        phase: 'queued',
+        level: 'info',
+        message: t('createWorldWindow.loadingDialog.queued'),
+        timestampMs: Date.now(),
+      },
+    ]);
+    setIsGenerating(true);
     void generateWorld(input)
       .then(() => {
+        setIsGenerating(false);
         setStatus(t('createWorldWindow.statusGenerated', { name: input.name }));
         setSubmitted(true);
         appendLog({
@@ -668,6 +752,7 @@ export function CreateWorldWindow() {
         closeDialog();
       })
       .catch((error) => {
+        setIsGenerating(false);
         const summary = error instanceof Error ? error.message : String(error);
         const detail = error instanceof Error
           ? error.stack && error.stack.includes(summary)
@@ -916,7 +1001,7 @@ export function CreateWorldWindow() {
               <label className="create-world-field">
                 <span>{t('createWorldWindow.fields.dataSource')}</span>
                 <select value={dataSource} disabled>
-                  <option value="Google Photorealistic 3D Tiles">Google Photorealistic 3D Tiles</option>
+                  <option value="Google 3D Tiles + OSM Overpass">Google 3D Tiles + OSM Overpass</option>
                 </select>
               </label>
               <label className="create-world-field">
@@ -1033,7 +1118,7 @@ export function CreateWorldWindow() {
               type="button"
               className="create-world-primary-button"
               onClick={handleNext}
-              disabled={submitted && currentStep === 3}
+              disabled={isGenerating || (submitted && currentStep === 3)}
             >
               {currentStep === 3 ? <FiSave /> : null}
               {currentStep === 3
@@ -1043,6 +1128,52 @@ export function CreateWorldWindow() {
             </button>
           </div>
         </footer>
+
+        {isGenerating ? (
+          <div
+            className="create-world-loading-overlay"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="create-world-loading-title"
+          >
+            <div className="create-world-loading-card">
+              <div className="create-world-loading-header">
+                <span className="create-world-loading-spinner" aria-hidden="true" />
+                <div className="create-world-loading-title-block">
+                  <strong id="create-world-loading-title">
+                    {t('createWorldWindow.loadingDialog.title')}
+                  </strong>
+                  <span>{t('createWorldWindow.loadingDialog.subtitle')}</span>
+                </div>
+              </div>
+              <div
+                ref={progressLogContainerRef}
+                className="create-world-loading-log"
+                aria-live="polite"
+              >
+                {progressLogs.length === 0 ? (
+                  <div className="create-world-loading-log-empty">
+                    {t('createWorldWindow.loadingDialog.waiting')}
+                  </div>
+                ) : (
+                  progressLogs.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className={`create-world-loading-log-row create-world-loading-log-${entry.level}`}
+                    >
+                      <time>{formatProgressTimestamp(entry.timestampMs)}</time>
+                      <span className="create-world-loading-log-phase">{entry.phase}</span>
+                      <span className="create-world-loading-log-message">{entry.message}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className="create-world-loading-footer">
+                <span>{t('createWorldWindow.loadingDialog.hint')}</span>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {errorDetail ? (
           <div

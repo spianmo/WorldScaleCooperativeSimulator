@@ -24,6 +24,7 @@ import NearFarScalar from '@cesium/engine/Source/Core/NearFarScalar.js';
 import PolygonHierarchy from '@cesium/engine/Source/Core/PolygonHierarchy.js';
 import ScreenSpaceEventHandler from '@cesium/engine/Source/Core/ScreenSpaceEventHandler.js';
 import ScreenSpaceEventType from '@cesium/engine/Source/Core/ScreenSpaceEventType.js';
+import SceneTransforms from '@cesium/engine/Source/Scene/SceneTransforms.js';
 import Transforms from '@cesium/engine/Source/Core/Transforms.js';
 import buildModuleUrl from '@cesium/engine/Source/Core/buildModuleUrl.js';
 import Cesium3DTileStyle from '@cesium/engine/Source/Scene/Cesium3DTileStyle.js';
@@ -734,7 +735,7 @@ function addPolylineForObject(widget: SceneWidget, object: WorldObject) {
       positions: Cartesian3.fromDegreesArray(points.flatMap(([lat, lon]) => [lon, lat])),
       width: object.kind.includes('road') ? 4 : 2,
       material: object.kind.includes('road')
-        ? Color.fromCssColorString('#fbbc04').withAlpha(0.78)
+        ? Color.fromCssColorString('#8ab4f8').withAlpha(0.85)
         : Color.fromCssColorString('#34a853').withAlpha(0.58),
       clampToGround: true,
       arcType: ArcType.GEODESIC,
@@ -744,22 +745,66 @@ function addPolylineForObject(widget: SceneWidget, object: WorldObject) {
   });
 }
 
-function addPointForObject(widget: SceneWidget, object: WorldObject) {
+function addRoadLabelForObject(widget: SceneWidget, object: WorldObject) {
+  if (!object.kind.includes('road')) {
+    return;
+  }
+  // Rust 端在没有 OSM `name` 时回退成 "OSM 道路 {id}"，这种合成名做 label 没意义，跳过。
+  if (!object.name || /^OSM\s+道路\s+\d+/.test(object.name)) {
+    return;
+  }
+  const points = object.properties?.geometry
+    ?.split(';')
+    .map((pair) => pair.split(',').map((value) => Number.parseFloat(value.trim())))
+    .filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
+  if (!points || points.length < 2) {
+    return;
+  }
+  const [midLat, midLon] = points[Math.floor(points.length / 2)];
+
+  widget.entities.add({
+    id: `road-label-${object.id}`,
+    position: Cartesian3.fromDegrees(midLon, midLat, 1.2),
+    label: {
+      text: object.name,
+      font: '600 11px Google Sans, Arial, sans-serif',
+      style: LabelStyle.FILL_AND_OUTLINE,
+      fillColor: Color.WHITE,
+      outlineColor: Color.fromCssColorString('#1967d2'),
+      outlineWidth: 3,
+      verticalOrigin: VerticalOrigin.CENTER,
+      horizontalOrigin: HorizontalOrigin.CENTER,
+      heightReference: HeightReference.CLAMP_TO_GROUND,
+      pixelOffset: new Cartesian2(0, 0),
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      distanceDisplayCondition: new DistanceDisplayCondition(0, 1400),
+    },
+  });
+}
+
+function readPoiCoords(object: WorldObject): { lat: number; lon: number } | null {
   const lat = parseNumber(object.properties?.lat);
   const lon = parseNumber(object.properties?.lon);
   if (lat === undefined || lon === undefined || object.properties?.world_metadata === 'true') {
-    return;
+    return null;
   }
-
   const isPoi = object.kind.includes('poi') || object.kind.includes('landmark');
   if (!isPoi) {
+    return null;
+  }
+  return { lat, lon };
+}
+
+function addPointForObject(widget: SceneWidget, object: WorldObject) {
+  const coords = readPoiCoords(object);
+  if (!coords) {
     return;
   }
 
   widget.entities.add({
     id: `poi-${object.id}`,
     name: object.name,
-    position: Cartesian3.fromDegrees(lon, lat, 6),
+    position: Cartesian3.fromDegrees(coords.lon, coords.lat, 6),
     point: {
       pixelSize: 9,
       color: Color.fromCssColorString('#1a73e8'),
@@ -769,6 +814,19 @@ function addPointForObject(widget: SceneWidget, object: WorldObject) {
       disableDepthTestDistance: Number.POSITIVE_INFINITY,
       distanceDisplayCondition: new DistanceDisplayCondition(0, 2600),
     },
+  });
+}
+
+function addPoiLabelForObject(widget: SceneWidget, object: WorldObject) {
+  const coords = readPoiCoords(object);
+  if (!coords || !object.name) {
+    return;
+  }
+
+  widget.entities.add({
+    id: `poi-label-${object.id}`,
+    name: object.name,
+    position: Cartesian3.fromDegrees(coords.lon, coords.lat, 6),
     label: {
       text: object.name,
       font: '600 12px Google Sans, Arial, sans-serif',
@@ -778,6 +836,7 @@ function addPointForObject(widget: SceneWidget, object: WorldObject) {
       outlineWidth: 3,
       pixelOffset: new Cartesian2(0, -18),
       verticalOrigin: VerticalOrigin.BOTTOM,
+      heightReference: HeightReference.CLAMP_TO_GROUND,
       disableDepthTestDistance: Number.POSITIVE_INFINITY,
       distanceDisplayCondition: new DistanceDisplayCondition(0, 1600),
     },
@@ -1240,23 +1299,24 @@ function addTopologyEntities(
 
   goals.forEach((goal, goalIndex) => {
     const goalTasks = tasksByGoal.get(goal.id) ?? [];
-    const points: GeoPoint[] = [];
+    const taskPoints: { task: SimulationTask; point: GeoPoint }[] = [];
     goalTasks.forEach((task) => {
       const markerForTask = markerByTaskId.get(task.id);
       if (markerForTask) {
-        points.push(markerForTask.position);
+        taskPoints.push({ task, point: markerForTask.position });
         return;
       }
       if (task.assigneeDeviceId) {
         const device = deviceById.get(task.assigneeDeviceId);
         if (device) {
-          points.push(deviceGeoPosition(center, device));
+          taskPoints.push({ task, point: deviceGeoPosition(center, device) });
         }
       }
     });
-    if (points.length === 0) {
+    if (taskPoints.length === 0) {
       return;
     }
+    const points = taskPoints.map(({ point }) => point);
 
     const colorHex = TOPOLOGY_COLORS[goalIndex % TOPOLOGY_COLORS.length];
     const centroid: GeoPoint = points.reduce(
@@ -1268,7 +1328,13 @@ function addTopologyEntities(
       { lon: 0, lat: 0, height: 0 },
     );
 
-    points.forEach((point, index) => {
+    // 同一终端可能承接多条任务,按 deviceKey 计数,给每条任务标题分配垂直槽位,避免文字堆叠。
+    const slotByDevice = new Map<string, number>();
+    const TASK_LABEL_BASE_Y = -52;
+    const TASK_LABEL_LINE_HEIGHT = 20;
+    const TASK_TITLE_MAX_LEN = 16;
+
+    taskPoints.forEach(({ task, point }, index) => {
       widget.entities.add({
         id: `${TOPOLOGY_PREFIX}goal-${goal.id}-link-${index}`,
         polyline: {
@@ -1276,6 +1342,33 @@ function addTopologyEntities(
           width: 2,
           material: cssWithAlpha(colorHex, 0.85),
           arcType: ArcType.NONE,
+        },
+      });
+
+      const deviceKey = task.assigneeDeviceId ?? `${point.lon.toFixed(6)},${point.lat.toFixed(6)}`;
+      const slot = slotByDevice.get(deviceKey) ?? 0;
+      slotByDevice.set(deviceKey, slot + 1);
+      const labelY = TASK_LABEL_BASE_Y - slot * TASK_LABEL_LINE_HEIGHT;
+      const truncated = task.title.length > TASK_TITLE_MAX_LEN
+        ? `${task.title.slice(0, TASK_TITLE_MAX_LEN - 1)}…`
+        : task.title;
+
+      widget.entities.add({
+        id: `${TOPOLOGY_PREFIX}task-${task.id}-label`,
+        position: Cartesian3.fromDegrees(point.lon, point.lat, point.height + 6),
+        label: {
+          text: truncated,
+          font: '600 11px Google Sans, Arial, sans-serif',
+          fillColor: Color.WHITE,
+          outlineColor: Color.fromCssColorString(colorHex),
+          outlineWidth: 3,
+          style: LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset: new Cartesian2(0, labelY),
+          verticalOrigin: VerticalOrigin.BOTTOM,
+          showBackground: true,
+          backgroundColor: Color.fromCssColorString(colorHex).withAlpha(0.6),
+          backgroundPadding: new Cartesian2(6, 3),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
       });
     });
@@ -1293,9 +1386,11 @@ function addTopologyEntities(
       });
     }
 
+    // 把 goal 的总标题抬到 centroid 上方足够高的位置,避开任务标签和 hub 连线。
+    const goalLabelHeight = centroid.height + 60;
     widget.entities.add({
       id: `${TOPOLOGY_PREFIX}goal-${goal.id}-label`,
-      position: Cartesian3.fromDegrees(centroid.lon, centroid.lat, centroid.height),
+      position: Cartesian3.fromDegrees(centroid.lon, centroid.lat, goalLabelHeight),
       point: {
         pixelSize: 10,
         color: Color.fromCssColorString(colorHex),
@@ -1304,15 +1399,31 @@ function addTopologyEntities(
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
       label: {
-        text: goal.title,
+        text: goal.title.length > 18 ? `${goal.title.slice(0, 17)}…` : goal.title,
         font: '700 12px Google Sans, Arial, sans-serif',
         fillColor: Color.WHITE,
         outlineColor: Color.fromCssColorString(colorHex),
         outlineWidth: 3,
         style: LabelStyle.FILL_AND_OUTLINE,
-        pixelOffset: new Cartesian2(0, -16),
+        pixelOffset: new Cartesian2(0, -18),
         verticalOrigin: VerticalOrigin.BOTTOM,
+        showBackground: true,
+        backgroundColor: Color.fromCssColorString(colorHex).withAlpha(0.75),
+        backgroundPadding: new Cartesian2(8, 4),
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+    });
+    // 从 centroid 拉一条竖线到抬高后的标题点,让"网关→中心"的视觉关系仍然清晰。
+    widget.entities.add({
+      id: `${TOPOLOGY_PREFIX}goal-${goal.id}-stem`,
+      polyline: {
+        positions: [
+          geoToCartesian(centroid),
+          Cartesian3.fromDegrees(centroid.lon, centroid.lat, goalLabelHeight),
+        ],
+        width: 1.5,
+        material: cssWithAlpha(colorHex, 0.6),
+        arcType: ArcType.NONE,
       },
     });
   });
@@ -1418,6 +1529,7 @@ export function WorldScene({
   const eventHandlerRef = useRef<ScreenSpaceEventHandler | undefined>(undefined);
   const tilesetRef = useRef<Cesium3DTileset | undefined>(undefined);
   const cameraListenerRef = useRef<(() => void) | undefined>(undefined);
+  const scenePopupRenderRemoverRef = useRef<(() => void) | undefined>(undefined);
   const orbitStateRef = useRef<{ center: Cartesian3; range: number } | null>(null);
   const activeToolRef = useRef<ActiveTool>(activeTool);
   const onScenePickRef = useRef<typeof onScenePick>(onScenePick);
@@ -1434,7 +1546,22 @@ export function WorldScene({
     tone: 'loading',
     message: t('worldScene.loadingTiles'),
   }));
-  const [selectedEntityName, setSelectedEntityName] = useState<string>();
+  type ScenePopupInfo = {
+    anchor: Cartesian3;
+    name: string;
+    subtitle?: string;
+    detail?: string;
+  };
+  const [scenePopup, setScenePopup] = useState<ScenePopupInfo | null>(null);
+  const scenePopupRef = useRef<ScenePopupInfo | null>(null);
+  const scenePopupElRef = useRef<HTMLDivElement | null>(null);
+  const objectsForPopupRef = useRef<WorldObject[]>(objects);
+  useEffect(() => {
+    scenePopupRef.current = scenePopup;
+  }, [scenePopup]);
+  useEffect(() => {
+    objectsForPopupRef.current = objects;
+  }, [objects]);
   const [tilesetReady, setTilesetReady] = useState(false);
   const worldMetadata = useMemo(() => {
     if (providedWorldMetadata && Object.keys(providedWorldMetadata).length > 0) {
@@ -1629,12 +1756,61 @@ export function WorldScene({
           return;
         }
       }
-      const pickedEntity = widget.scene.pick(movement.position) as { id?: { id?: string; name?: string } } | undefined;
+      const pickedEntity = widget.scene.pick(movement.position) as
+        | { id?: { id?: string; name?: string; position?: { getValue?: (time: JulianDate) => Cartesian3 | undefined } } }
+        | undefined;
       const entityId = pickedEntity?.id?.id?.toString();
-      setSelectedEntityName(pickedEntity?.id?.name);
       if (!tool && onSelectOverlayRef.current) {
         const overlay = parseUserOverlayId(entityId);
         onSelectOverlayRef.current(overlay);
+      }
+      // 把过去顶部的 selectedEntityName 横幅替换成跟随相机的浮窗。
+      // 用户图层（标记 / 测距 / 区域）保留其原本的选中行为，浮窗只覆盖 OSM / POI 实体。
+      if (
+        !entityId
+        || entityId.startsWith(USER_ENTITY_PREFIX)
+        || entityId.startsWith(GRID_ENTITY_PREFIX)
+      ) {
+        setScenePopup(null);
+      } else {
+        const objectId = entityId.replace(/^(?:osm|road-label|poi-label|poi|device)-/, '');
+        const matchedObject = objectsForPopupRef.current.find((object) => object.id === objectId);
+        let anchor: Cartesian3 | undefined;
+        const entityPosition = pickedEntity?.id?.position;
+        if (entityPosition?.getValue) {
+          anchor = entityPosition.getValue(JulianDate.now()) ?? undefined;
+        }
+        if (!anchor) {
+          const picked = widget.scene.pickPosition(movement.position);
+          anchor = picked ?? undefined;
+        }
+        if (!anchor) {
+          setScenePopup(null);
+        } else {
+          const name = pickedEntity?.id?.name ?? matchedObject?.name ?? entityId;
+          const subtitle = matchedObject?.kind
+            ? t(`worldScene.popup.kind.${matchedObject.kind}`, { defaultValue: matchedObject.kind })
+            : undefined;
+          const address = matchedObject?.properties?.formatted_address;
+          const lat = matchedObject?.properties?.lat;
+          const lon = matchedObject?.properties?.lon;
+          const detail = address || (lat && lon ? `${lat}, ${lon}` : undefined);
+          setScenePopup({ anchor, name, subtitle, detail });
+          // 立即把锚点投影到屏幕、并写入 DOM transform；
+          // 避免下一帧 postRender 才更新位置导致浮窗"先跳到 (0,0) 再归位"的闪烁。
+          const el = scenePopupElRef.current;
+          if (el) {
+            const projected = SceneTransforms.worldToWindowCoordinates(
+              widget.scene,
+              anchor,
+              new Cartesian2(),
+            );
+            if (projected) {
+              el.style.transform = `translate3d(${projected.x.toFixed(1)}px, ${projected.y.toFixed(1)}px, 0)`;
+              el.style.display = 'block';
+            }
+          }
+        }
       }
     }, ScreenSpaceEventType.LEFT_CLICK);
     eventHandlerRef.current = handler;
@@ -1652,6 +1828,51 @@ export function WorldScene({
     });
     cameraListenerRef.current = removeCameraListener;
 
+    // 把锚点逐帧投影到屏幕坐标，保持浮窗"贴在"对应实体上。
+    // 注意：这里直接改 DOM transform 而不是 setState，避免每帧触发 React 渲染。
+    const projectionScratch = new Cartesian2();
+    const removeScenePopupRender = widget.scene.postRender.addEventListener(() => {
+      const popup = scenePopupRef.current;
+      const el = scenePopupElRef.current;
+      if (!el) {
+        return;
+      }
+      if (!popup) {
+        if (el.style.display !== 'none') {
+          el.style.display = 'none';
+        }
+        return;
+      }
+      const projected = SceneTransforms.worldToWindowCoordinates(
+        widget.scene,
+        popup.anchor,
+        projectionScratch,
+      );
+      if (!projected) {
+        if (el.style.display !== 'none') {
+          el.style.display = 'none';
+        }
+        return;
+      }
+      const canvas = widget.scene.canvas;
+      const cw = canvas.clientWidth;
+      const ch = canvas.clientHeight;
+      if (
+        projected.x < -200
+        || projected.x > cw + 200
+        || projected.y < -200
+        || projected.y > ch + 200
+      ) {
+        if (el.style.display !== 'none') {
+          el.style.display = 'none';
+        }
+        return;
+      }
+      el.style.display = 'block';
+      el.style.transform = `translate3d(${projected.x.toFixed(1)}px, ${projected.y.toFixed(1)}px, 0)`;
+    });
+    scenePopupRenderRemoverRef.current = removeScenePopupRender;
+
     let cancelled = false;
     const cleanupCesium = () => {
       cancelled = true;
@@ -1661,6 +1882,8 @@ export function WorldScene({
       eventHandlerRef.current = undefined;
       cameraListenerRef.current?.();
       cameraListenerRef.current = undefined;
+      scenePopupRenderRemoverRef.current?.();
+      scenePopupRenderRemoverRef.current = undefined;
       tilesetRef.current = undefined;
       setTilesetReady(false);
       widgetRef.current = undefined;
@@ -1736,18 +1959,37 @@ export function WorldScene({
     }
 
     const pathsOn = isLayerEnabled(layers, 'paths');
+    const roadLabelsOn = isLayerEnabled(layers, 'road_labels');
     const poisOn = isLayerEnabled(layers, 'pois');
+    const poiLabelsOn = isLayerEnabled(layers, 'poi_labels');
     const devicesOn = isLayerEnabled(layers, 'devices');
 
-    const visibleObjects = pathsOn || poisOn ? objects.slice(0, 160) : [];
+    // POI（Landmark）由 Google Places 在 OSM 要素之后追加，
+    // 直接 slice(0, 160) 会把全部 POI 截掉。这里按桶分别取，保证 POI 始终可见。
+    const isPoiKind = (object: WorldObject) => {
+      const kind = object.kind ?? '';
+      return kind.includes('landmark') || kind.includes('poi');
+    };
+    const polylineObjects = pathsOn || roadLabelsOn
+      ? objects.filter((object) => !isPoiKind(object)).slice(0, 160)
+      : [];
+    const poiObjects = poisOn || poiLabelsOn
+      ? objects.filter(isPoiKind).slice(0, 200)
+      : [];
     const visibleDevices = devicesOn ? devices.slice(0, 36) : [];
 
     const desired = new Set<string>();
     if (pathsOn) {
-      visibleObjects.forEach((object) => desired.add(`osm-${object.id}`));
+      polylineObjects.forEach((object) => desired.add(`osm-${object.id}`));
+    }
+    if (roadLabelsOn) {
+      polylineObjects.forEach((object) => desired.add(`road-label-${object.id}`));
     }
     if (poisOn) {
-      visibleObjects.forEach((object) => desired.add(`poi-${object.id}`));
+      poiObjects.forEach((object) => desired.add(`poi-${object.id}`));
+    }
+    if (poiLabelsOn) {
+      poiObjects.forEach((object) => desired.add(`poi-label-${object.id}`));
     }
     if (devicesOn) {
       visibleDevices.forEach((device) => desired.add(`device-${device.id}`));
@@ -1765,13 +2007,23 @@ export function WorldScene({
     });
     toRemove.forEach((entity) => widget.entities.remove(entity));
 
-    if (pathsOn || poisOn) {
-      visibleObjects.forEach((object) => {
+    if (pathsOn || roadLabelsOn) {
+      polylineObjects.forEach((object) => {
         if (pathsOn && !widget.entities.getById(`osm-${object.id}`)) {
           addPolylineForObject(widget, object);
         }
+        if (roadLabelsOn && !widget.entities.getById(`road-label-${object.id}`)) {
+          addRoadLabelForObject(widget, object);
+        }
+      });
+    }
+    if (poisOn || poiLabelsOn) {
+      poiObjects.forEach((object) => {
         if (poisOn && !widget.entities.getById(`poi-${object.id}`)) {
           addPointForObject(widget, object);
+        }
+        if (poiLabelsOn && !widget.entities.getById(`poi-label-${object.id}`)) {
+          addPoiLabelForObject(widget, object);
         }
       });
     }
@@ -2012,7 +2264,7 @@ export function WorldScene({
     const topologyOn = isLayerEnabled(layers, 'topology');
     const sig = topologyOn
       ? `${goals.map((g) => `${g.id}:${g.title}`).join(';')}|${tasks
-          .map((task) => `${task.id}:${task.goalId ?? ''}:${task.assigneeDeviceId ?? ''}`)
+          .map((task) => `${task.id}:${task.title}:${task.goalId ?? ''}:${task.assigneeDeviceId ?? ''}`)
           .join(';')}|${devices
           .map((device) => {
             const geo = deviceGeoPosition(center, device);
@@ -2277,11 +2529,37 @@ export function WorldScene({
           <span>3D Tiles</span>
         </div>
       ) : null}
-      {selectedEntityName ? (
-        <div className="cesium-world-scene-picked">
-          {selectedEntityName}
-        </div>
-      ) : null}
+      <div
+        ref={scenePopupElRef}
+        className="cesium-world-scene-popup"
+        style={{ display: scenePopup ? 'block' : 'none' }}
+        aria-hidden={!scenePopup}
+      >
+        {scenePopup ? (
+          <div
+            className="cesium-world-scene-popup-card"
+            role="dialog"
+            aria-live="polite"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="cesium-world-scene-popup-close"
+              aria-label={t('worldScene.popup.closeAria', { defaultValue: 'Close' })}
+              onClick={() => setScenePopup(null)}
+            >
+              ×
+            </button>
+            <strong className="cesium-world-scene-popup-title">{scenePopup.name}</strong>
+            {scenePopup.subtitle ? (
+              <span className="cesium-world-scene-popup-subtitle">{scenePopup.subtitle}</span>
+            ) : null}
+            {scenePopup.detail ? (
+              <span className="cesium-world-scene-popup-detail">{scenePopup.detail}</span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
       {onHumanRoamStartPlace && cameraMode === 'human_roam' ? (
         <PegmanDraggable
           inStreetView={!!humanRoamStart}

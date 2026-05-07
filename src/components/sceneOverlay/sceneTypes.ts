@@ -39,7 +39,9 @@ export type SceneLayerId =
   | 'tiles3d'
   | 'devices'
   | 'paths'
+  | 'road_labels'
   | 'pois'
+  | 'poi_labels'
   | 'topology'
   | 'markers'
   | 'measurements'
@@ -91,7 +93,9 @@ export const DEFAULT_LAYERS: SceneLayerState[] = [
   { id: 'tiles3d', enabled: true },
   { id: 'devices', enabled: true },
   { id: 'paths', enabled: true },
+  { id: 'road_labels', enabled: true },
   { id: 'pois', enabled: true },
+  { id: 'poi_labels', enabled: true },
   { id: 'topology', enabled: false },
   { id: 'markers', enabled: true },
   { id: 'measurements', enabled: true },
