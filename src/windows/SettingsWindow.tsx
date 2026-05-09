@@ -191,15 +191,6 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
     };
   }, []);
 
-  const refreshCacheStats = () => {
-    if (cacheBusy) return;
-    setCacheBusy(true);
-    void getTileCacheStats()
-      .then(setCacheStats)
-      .catch(() => undefined)
-      .finally(() => setCacheBusy(false));
-  };
-
   const handleClearCache = () => {
     if (cacheBusy) return;
     setCacheBusy(true);
@@ -259,6 +250,7 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
     if (!proxyChanged && !cacheChanged) {
       appendLog({ level: 'info', scope: 'settings', message: t('settingsWindow.status.savedLog') });
       setStatusMessage(t('settingsWindow.status.savedLog'));
+      closeDialog();
       return;
     }
     setCacheBusy(true);
@@ -285,6 +277,7 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
           appendLog({ level: 'info', scope: 'settings', message: t('settingsWindow.cache.saved') });
           setStatusMessage(t('settingsWindow.cache.saved'));
         }
+        closeDialog();
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -505,14 +498,6 @@ export function SettingsWindow({ title = 'Settings' }: SettingsWindowProps) {
           active: cacheStats ? cacheStats.sizeBytes > 0 : false,
           control: (
             <div style={cacheActionRowStyle}>
-              <button
-                type="button"
-                className="create-settings-secondary-button"
-                onClick={refreshCacheStats}
-                disabled={cacheBusy}
-              >
-                {t('settingsWindow.cache.refresh')}
-              </button>
               <button
                 type="button"
                 className="create-settings-secondary-button"
