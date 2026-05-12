@@ -472,6 +472,9 @@ function buildHeadingRadFromDevice(device: SimulationDevice): number {
   return CesiumMath.toRadians(90 - device.telemetry.headingDeg);
 }
 
+// 设备 motion 是"上一帧位置 → 当前服务器位置"的连续插值,前后两段 motion 在 tick 边界自然衔接。
+// 这里改用线性 lerp(以前是 easeInOutQuad):缓动会让每段在边界处速度趋零,肉眼看到 stop-and-go;
+// 线性匀速则跨 tick 速度连续,移动看起来才丝滑。
 function sampleMotionPosition(
   motion: DeviceMotion,
   nowMs: number,
@@ -480,10 +483,9 @@ function sampleMotionPosition(
   const t = motion.durationMs > 0
     ? clamp01((nowMs - motion.startMs) / motion.durationMs)
     : 1;
-  const e = easeInOutQuad(t);
-  const lon = lerp(motion.fromLon, motion.toLon, e);
-  const lat = lerp(motion.fromLat, motion.toLat, e);
-  const height = lerp(motion.fromHeight, motion.toHeight, e);
+  const lon = lerp(motion.fromLon, motion.toLon, t);
+  const lat = lerp(motion.fromLat, motion.toLat, t);
+  const height = lerp(motion.fromHeight, motion.toHeight, t);
   return Cartesian3.fromDegrees(lon, lat, height, undefined, result);
 }
 
@@ -491,8 +493,7 @@ function sampleMotionHeading(motion: DeviceMotion, nowMs: number): number {
   const t = motion.durationMs > 0
     ? clamp01((nowMs - motion.startMs) / motion.durationMs)
     : 1;
-  const e = easeInOutQuad(t);
-  return lerp(motion.fromHeading, motion.toHeading, e);
+  return lerp(motion.fromHeading, motion.toHeading, t);
 }
 
 const HPR_SCRATCH = new HeadingPitchRoll();
@@ -517,12 +518,11 @@ function snapshotMotion(motion: DeviceMotion, nowMs: number): {
   const t = motion.durationMs > 0
     ? clamp01((nowMs - motion.startMs) / motion.durationMs)
     : 1;
-  const e = easeInOutQuad(t);
   return {
-    lon: lerp(motion.fromLon, motion.toLon, e),
-    lat: lerp(motion.fromLat, motion.toLat, e),
-    height: lerp(motion.fromHeight, motion.toHeight, e),
-    heading: lerp(motion.fromHeading, motion.toHeading, e),
+    lon: lerp(motion.fromLon, motion.toLon, t),
+    lat: lerp(motion.fromLat, motion.toLat, t),
+    height: lerp(motion.fromHeight, motion.toHeight, t),
+    heading: lerp(motion.fromHeading, motion.toHeading, t),
   };
 }
 
@@ -1278,6 +1278,7 @@ function addTopologyEntities(
   tasks: SimulationTask[],
   devices: SimulationDevice[],
   markers: SceneMarker[],
+  motionsRef: MutableRefObject<Map<string, DeviceMotion>>,
 ) {
   const deviceById = new Map(devices.map((device) => [device.id, device]));
   const markerByTaskId = new Map<string, SceneMarker>();
@@ -1287,67 +1288,119 @@ function addTopologyEntities(
       markerByTaskId.set(taskId, marker);
     }
   });
+  // 动态获取设备当前位置:优先取 motion 插值结果,这样拓扑连接线/标签会跟设备一起平滑流动,
+  // 不再需要靠每 tick 重建拓扑实体来"追"设备(那种重建+签名比对里只要设备移动,
+  // 整套 topology 实体就 remove → re-add 一遍,肉眼看到的是连线一闪一闪甚至消失)。
+  const livePoint = (deviceId: string | undefined, fallback: GeoPoint): GeoPoint => {
+    if (!deviceId) return fallback;
+    const motion = motionsRef.current.get(deviceId);
+    if (!motion) return fallback;
+    const snap = snapshotMotion(motion, Date.now());
+    return { lon: snap.lon, lat: snap.lat, height: snap.height };
+  };
+  // 拓扑覆盖只保留"当前这次决策":按 createdAt 取最新的那个 goal,其余历史 goal 不渲染。
+  // 这样新指令一下达,旧决策的标题/连接线/任务字幕都立即消失,不再堆叠也不留尾巴。
+  const latestGoalId = goals.reduce<{ id: string; ts: number } | null>((acc, goal) => {
+    const ts = Date.parse(goal.createdAt) || 0;
+    if (!acc || ts > acc.ts) {
+      return { id: goal.id, ts };
+    }
+    return acc;
+  }, null)?.id;
   const tasksByGoal = new Map<string, SimulationTask[]>();
   tasks.forEach((task) => {
-    if (!task.goalId) {
+    if (!task.goalId || task.goalId !== latestGoalId) {
       return;
     }
     const list = tasksByGoal.get(task.goalId) ?? [];
     list.push(task);
     tasksByGoal.set(task.goalId, list);
   });
+  const renderableGoals = latestGoalId
+    ? goals.filter((goal) => goal.id === latestGoalId)
+    : [];
 
-  goals.forEach((goal, goalIndex) => {
+  // 多个 goal 可能共用同一组终端,centroid 几乎重合,需要按 centroid 网格给 goal 标题分配垂直槽位。
+  const goalSlotByCentroid = new Map<string, number>();
+  // 跨 goal 共用同一终端的任务标签也要错开,避免不同 goal 的任务字幕在同一台设备上互相覆盖。
+  const taskSlotByDevice = new Map<string, number>();
+
+  renderableGoals.forEach((goal, goalIndex) => {
     const goalTasks = tasksByGoal.get(goal.id) ?? [];
-    const taskPoints: { task: SimulationTask; point: GeoPoint }[] = [];
+    // 把每条任务的"取点方式"记录下来:静态 marker 直接固定,动态 device 走 livePoint 即时插值。
+    type LiveTaskSpec = {
+      task: SimulationTask;
+      fallback: GeoPoint;       // 重建瞬间的位置,作为 motion 缺失时的兜底
+      deviceId?: string;        // 走设备 motion 的任务才有
+    };
+    const liveSpecs: LiveTaskSpec[] = [];
     goalTasks.forEach((task) => {
       const markerForTask = markerByTaskId.get(task.id);
       if (markerForTask) {
-        taskPoints.push({ task, point: markerForTask.position });
+        liveSpecs.push({ task, fallback: markerForTask.position });
         return;
       }
       if (task.assigneeDeviceId) {
         const device = deviceById.get(task.assigneeDeviceId);
         if (device) {
-          taskPoints.push({ task, point: deviceGeoPosition(center, device) });
+          liveSpecs.push({
+            task,
+            fallback: deviceGeoPosition(center, device),
+            deviceId: task.assigneeDeviceId,
+          });
         }
       }
     });
-    if (taskPoints.length === 0) {
+    if (liveSpecs.length === 0) {
       return;
     }
-    const points = taskPoints.map(({ point }) => point);
 
     const colorHex = TOPOLOGY_COLORS[goalIndex % TOPOLOGY_COLORS.length];
-    const centroid: GeoPoint = points.reduce(
-      (acc, point) => ({
-        lon: acc.lon + point.lon / points.length,
-        lat: acc.lat + point.lat / points.length,
-        height: acc.height + (point.height + 12) / points.length,
-      }),
-      { lon: 0, lat: 0, height: 0 },
-    );
 
-    // 同一终端可能承接多条任务,按 deviceKey 计数,给每条任务标题分配垂直槽位,避免文字堆叠。
-    const slotByDevice = new Map<string, number>();
+    // 每帧重新解析当前所有任务点的实时位置(marker 静态/device 走 motion 插值)。
+    const sampleTaskPoints = (): GeoPoint[] =>
+      liveSpecs.map((spec) => livePoint(spec.deviceId, spec.fallback));
+    const sampleCentroid = (pts: GeoPoint[]): GeoPoint => {
+      const n = pts.length;
+      let lon = 0, lat = 0, h = 0;
+      pts.forEach((p) => {
+        lon += p.lon / n;
+        lat += p.lat / n;
+        h += (p.height + 12) / n;
+      });
+      return { lon, lat, height: h };
+    };
+
+    // 重建瞬间的 fallback centroid,用于槽位 key 与 goal 标题的初始高度估算。
+    const fallbackPoints = liveSpecs.map((spec) => spec.fallback);
+    const fallbackCentroid = sampleCentroid(fallbackPoints);
+
     const TASK_LABEL_BASE_Y = -52;
     const TASK_LABEL_LINE_HEIGHT = 20;
     const TASK_TITLE_MAX_LEN = 16;
 
-    taskPoints.forEach(({ task, point }, index) => {
+    liveSpecs.forEach((spec, index) => {
+      const { task, fallback, deviceId } = spec;
+      // 连接线:每帧用 livePoint 重新求值,centroid 跟着所有任务点动态算出,
+      // 这样无人机起飞/移动时连接线和它一起延伸,不再卡在旧位置或被一闪一闪地销毁重建。
       widget.entities.add({
         id: `${TOPOLOGY_PREFIX}goal-${goal.id}-link-${index}`,
         polyline: {
-          positions: [geoToCartesian(centroid), geoToCartesian(point)],
+          positions: new CallbackProperty(() => {
+            const pts = sampleTaskPoints();
+            const c = sampleCentroid(pts);
+            return [geoToCartesian(c), geoToCartesian(pts[index] ?? fallback)];
+          }, false),
           width: 2,
           material: cssWithAlpha(colorHex, 0.85),
           arcType: ArcType.NONE,
         },
       });
 
-      const deviceKey = task.assigneeDeviceId ?? `${point.lon.toFixed(6)},${point.lat.toFixed(6)}`;
-      const slot = slotByDevice.get(deviceKey) ?? 0;
-      slotByDevice.set(deviceKey, slot + 1);
+      // 同一终端跨 goal 承接多条任务时,槽位需要全局递增,否则不同 goal 的任务标题会贴在同一行上互相覆盖。
+      const deviceKey = deviceId ?? `${fallback.lon.toFixed(6)},${fallback.lat.toFixed(6)}`;
+      const slot = taskSlotByDevice.get(deviceKey) ?? 0;
+      taskSlotByDevice.set(deviceKey, slot + 1);
       const labelY = TASK_LABEL_BASE_Y - slot * TASK_LABEL_LINE_HEIGHT;
       const truncated = task.title.length > TASK_TITLE_MAX_LEN
         ? `${task.title.slice(0, TASK_TITLE_MAX_LEN - 1)}…`
@@ -1355,7 +1408,10 @@ function addTopologyEntities(
 
       widget.entities.add({
         id: `${TOPOLOGY_PREFIX}task-${task.id}-label`,
-        position: Cartesian3.fromDegrees(point.lon, point.lat, point.height + 6),
+        position: new CallbackPositionProperty((_t: unknown, result?: Cartesian3) => {
+          const p = livePoint(deviceId, fallback);
+          return Cartesian3.fromDegrees(p.lon, p.lat, p.height + 6, undefined, result);
+        }, false),
         label: {
           text: truncated,
           font: '600 11px Google Sans, Arial, sans-serif',
@@ -1373,11 +1429,14 @@ function addTopologyEntities(
       });
     });
 
-    if (points.length >= 2) {
+    if (liveSpecs.length >= 2) {
       widget.entities.add({
         id: `${TOPOLOGY_PREFIX}goal-${goal.id}-hub`,
         polyline: {
-          positions: [...points, points[0]].map(geoToCartesian),
+          positions: new CallbackProperty(() => {
+            const pts = sampleTaskPoints();
+            return [...pts, pts[0]].map(geoToCartesian);
+          }, false),
           width: 1.5,
           material: cssWithAlpha(colorHex, 0.45),
           arcType: ArcType.GEODESIC,
@@ -1387,10 +1446,20 @@ function addTopologyEntities(
     }
 
     // 把 goal 的总标题抬到 centroid 上方足够高的位置,避开任务标签和 hub 连线。
-    const goalLabelHeight = centroid.height + 60;
+    // 多个 goal 共用一组终端时 centroid 会重合,按槽位再加一层垂直偏移,避免标题彼此完全堆叠。
+    // 槽位 key 基于 fallbackCentroid(创建时的位置)以保持稳定,运行时设备移动不应改变槽位分配。
+    const centroidKey = `${fallbackCentroid.lon.toFixed(5)},${fallbackCentroid.lat.toFixed(5)}`;
+    const goalSlot = goalSlotByCentroid.get(centroidKey) ?? 0;
+    goalSlotByCentroid.set(centroidKey, goalSlot + 1);
+    const GOAL_LABEL_LINE_HEIGHT = 26;
+    const goalLabelExtraHeight = goalSlot * GOAL_LABEL_LINE_HEIGHT * 0.4;
+    const goalLabelPixelOffset = -18 - goalSlot * GOAL_LABEL_LINE_HEIGHT;
     widget.entities.add({
       id: `${TOPOLOGY_PREFIX}goal-${goal.id}-label`,
-      position: Cartesian3.fromDegrees(centroid.lon, centroid.lat, goalLabelHeight),
+      position: new CallbackPositionProperty((_t: unknown, result?: Cartesian3) => {
+        const c = sampleCentroid(sampleTaskPoints());
+        return Cartesian3.fromDegrees(c.lon, c.lat, c.height + 60 + goalLabelExtraHeight, undefined, result);
+      }, false),
       point: {
         pixelSize: 10,
         color: Color.fromCssColorString(colorHex),
@@ -1405,7 +1474,7 @@ function addTopologyEntities(
         outlineColor: Color.fromCssColorString(colorHex),
         outlineWidth: 3,
         style: LabelStyle.FILL_AND_OUTLINE,
-        pixelOffset: new Cartesian2(0, -18),
+        pixelOffset: new Cartesian2(0, goalLabelPixelOffset),
         verticalOrigin: VerticalOrigin.BOTTOM,
         showBackground: true,
         backgroundColor: Color.fromCssColorString(colorHex).withAlpha(0.75),
@@ -1417,10 +1486,13 @@ function addTopologyEntities(
     widget.entities.add({
       id: `${TOPOLOGY_PREFIX}goal-${goal.id}-stem`,
       polyline: {
-        positions: [
-          geoToCartesian(centroid),
-          Cartesian3.fromDegrees(centroid.lon, centroid.lat, goalLabelHeight),
-        ],
+        positions: new CallbackProperty(() => {
+          const c = sampleCentroid(sampleTaskPoints());
+          return [
+            geoToCartesian(c),
+            Cartesian3.fromDegrees(c.lon, c.lat, c.height + 60 + goalLabelExtraHeight),
+          ];
+        }, false),
         width: 1.5,
         material: cssWithAlpha(colorHex, 0.6),
         arcType: ArcType.NONE,
@@ -2029,8 +2101,9 @@ export function WorldScene({
     }
     if (devicesOn) {
       const nowMs = Date.now();
-      // 比 tick 间隔略长，确保 CallbackProperty 在下一次 tick 之前完成插值，无视觉断点。
-      const motionDurationMs = Math.min(1500, Math.max(200, Math.round(tickIntervalMs * 1.05)));
+      // 设成 1.6× tick 间隔:线性插值下,新 motion 会在旧 motion 还没跑完时接管(advanceMotionTo
+      // 用 snapshotMotion 取当前点作为新 from),保证速度始终连续,不再出现"插值跑完→等下一帧 tick"的卡顿。
+      const motionDurationMs = Math.min(1500, Math.max(260, Math.round(tickIntervalMs * 1.6)));
       const seenIds = new Set<string>();
       visibleDevices.forEach((device, index) => {
         seenIds.add(device.id);
@@ -2262,15 +2335,13 @@ export function WorldScene({
     }
 
     const topologyOn = isLayerEnabled(layers, 'topology');
+    // 签名只关心"结构性变化":goal/task 增删改、status 切换、设备增删、marker 调整。
+    // 设备的几何位置由 CallbackProperty 每帧实时插值,无需进入签名 — 否则每 tick 都重建拓扑,
+    // 连接线和标签会被销毁后再加回,肉眼看到的就是"连接线一闪一闪甚至消失"。
     const sig = topologyOn
-      ? `${goals.map((g) => `${g.id}:${g.title}`).join(';')}|${tasks
-          .map((task) => `${task.id}:${task.title}:${task.goalId ?? ''}:${task.assigneeDeviceId ?? ''}`)
-          .join(';')}|${devices
-          .map((device) => {
-            const geo = deviceGeoPosition(center, device);
-            return `${device.id}:${geo.lon.toFixed(6)},${geo.lat.toFixed(6)},${geo.height.toFixed(2)}`;
-          })
-          .join(';')}|${markers
+      ? `${goals.map((g) => `${g.id}:${g.title}:${g.status}`).join(';')}|${tasks
+          .map((task) => `${task.id}:${task.title}:${task.status}:${task.goalId ?? ''}:${task.assigneeDeviceId ?? ''}`)
+          .join(';')}|${devices.map((device) => device.id).join(';')}|${markers
           .map((marker) => `${marker.id}:${marker.label ?? ''}:${marker.position.lon.toFixed(6)},${marker.position.lat.toFixed(6)},${marker.position.height.toFixed(2)}`)
           .join(';')}`
       : '';
@@ -2286,7 +2357,7 @@ export function WorldScene({
     toRemove.forEach((entity) => widget.entities.remove(entity));
 
     if (topologyOn) {
-      addTopologyEntities(widget, center, goals, tasks, devices, markers);
+      addTopologyEntities(widget, center, goals, tasks, devices, markers, deviceMotionsRef);
     }
     topologySignatureRef.current = sig;
     widget.scene.requestRender();

@@ -845,7 +845,7 @@ export const resources = {
           error: '异常',
         },
         defaultGoals: {
-          patrol: '飞跃维多利亚港，并拍摄照片',
+          patrol: '巡检香港文化中心与钟楼，并检查有无安全异常',
           uavReview: '对桥面和主楼入口执行无人机外立面复核',
           quadrupedFollow: '四足机器狗跟随地面机器人扫描低矮遮挡区',
         },

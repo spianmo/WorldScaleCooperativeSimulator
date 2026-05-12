@@ -2294,33 +2294,66 @@ fn advance_task_and_device(state: &mut SimulationState, step_seconds: f32) {
             {
                 let weather_scale = climate_motion_scale(state.world.climate, device.kind);
                 let wind = climate_wind_mps(state.world.climate);
-                // 仿真 tick 默认 0.2s,实际位移在世界尺度下肉眼几乎不可见;
-                // 这里给视觉位移一个放大系数,只作用于位置/姿态,电量/进度仍按真实 step_seconds 推进。
-                let visual_step_scale: f32 = 12.0;
-                let step = device.physical_profile.max_speed_mps.max(0.1)
-                    * weather_scale
-                    * step_seconds.max(0.1)
-                    * visual_step_scale;
+                // 视觉位移按"目标每 tick 走多少米"反推 scale,而不是给所有 device 同一个倍数:
+                //   * 无人机本身 max_speed 30+ m/s,再乘 12 倍会一帧跨出半个世界,撞墙后被 clamp 死;
+                //   * 地面机器人 max_speed 1-3 m/s,12 倍下一 tick 才走 0.5m,肉眼看不到;
+                // 用目标步长反求,所有 kind 视觉速度统一,运动看起来才有连贯感且范围足。
+                let target_step_m: f32 = match device.kind {
+                    DeviceKind::Drone => 8.0,
+                    DeviceKind::Humanoid | DeviceKind::Quadruped | DeviceKind::UnitreeRobot => 3.0,
+                    DeviceKind::Rover => 4.0,
+                    _ => 2.5,
+                };
+                let raw_speed = device.physical_profile.max_speed_mps.max(0.1);
+                let visual_step_scale =
+                    (target_step_m / (raw_speed * step_seconds.max(0.1))).clamp(1.0, 60.0);
+                let step = raw_speed * weather_scale * step_seconds.max(0.1) * visual_step_scale;
                 let heading_rad = device.orientation_deg.to_radians();
                 let drift = if device.kind == DeviceKind::Drone {
                     wind * 0.04
                 } else {
                     wind * 0.006
                 } * step_seconds.max(0.1) * visual_step_scale;
-                device.position.x = (device.position.x + heading_rad.cos() * step + drift)
-                    .clamp(0.0, state.world.size.x);
-                device.position.z = (device.position.z + heading_rad.sin() * step + drift * 0.35)
-                    .clamp(0.0, state.world.size.z);
+                let mut next_x = device.position.x + heading_rad.cos() * step + drift;
+                let mut next_z = device.position.z + heading_rad.sin() * step + drift * 0.35;
+                let world_x = state.world.size.x.max(1.0);
+                let world_z = state.world.size.z.max(1.0);
+                // 撞到边界时把航向沿对应轴翻转,让设备从墙上反弹回内场,而不是被 clamp 后贴墙不动。
+                let mut bounced = false;
+                if next_x <= 0.0 || next_x >= world_x {
+                    device.orientation_deg = (180.0 - device.orientation_deg).rem_euclid(360.0);
+                    next_x = next_x.clamp(0.0, world_x);
+                    bounced = true;
+                }
+                if next_z <= 0.0 || next_z >= world_z {
+                    device.orientation_deg = (-device.orientation_deg).rem_euclid(360.0);
+                    next_z = next_z.clamp(0.0, world_z);
+                    bounced = true;
+                }
+                if bounced {
+                    // 反弹后从墙边往里挪 1 格,避免下一 tick 又立刻越界、来回撞墙。
+                    // 边距按世界尺寸的 5% 取,世界很小时也不会出现 lower>upper 的反向 clamp。
+                    let margin_x = (world_x * 0.05).clamp(0.5, 4.0).min(world_x * 0.45);
+                    let margin_z = (world_z * 0.05).clamp(0.5, 4.0).min(world_z * 0.45);
+                    next_x = next_x.clamp(margin_x, world_x - margin_x);
+                    next_z = next_z.clamp(margin_z, world_z - margin_z);
+                }
+                device.position.x = next_x;
+                device.position.z = next_z;
                 if device.kind == DeviceKind::Drone {
+                    // 起降高度由 advance_drone_altitude 单独逐 tick 平滑推进,这里只压顶 + 防穿地,
+                    // 不再强制把 y 抬到 min_work_altitude_m,否则 Working 时第一帧就会瞬间跳到工作高度,看不到起飞。
                     device.position.y = device
                         .position
                         .y
-                        .max(device.physical_profile.min_work_altitude_m)
+                        .max(0.0)
                         .min(device.physical_profile.max_work_altitude_m);
                 }
+                // 之前每 tick 旋转 ~1° 会让设备走螺旋,实际位移范围被锁在很小的圈里;
+                // 改成基本保持航向、按优先级缓慢偏转,让设备在世界里能走出长直线。
                 let task_factor = (task.priority as f32).max(1.0);
                 device.orientation_deg =
-                    (device.orientation_deg + (5.0 + task_factor) * step_seconds) % 360.0;
+                    (device.orientation_deg + (0.4 + 0.15 * task_factor) * step_seconds) % 360.0;
                 device.updated_at = now();
             }
         } else {
@@ -2352,6 +2385,38 @@ fn advance_task_and_device(state: &mut SimulationState, step_seconds: f32) {
             goal.status = GoalStatus::Completed;
             goal.completed_at = Some(now());
             goal.updated_at = now();
+        }
+    }
+
+    advance_drone_altitude(state, step_seconds);
+}
+
+// 无人机起降:Working 时把高度逐 tick 抬到 min_work_altitude_m;否则降回地面 0。
+// 不使用任务循环里的 visual_step_scale,以保持垂直爬升速度肉眼可辨(否则一帧到顶看不到动画)。
+fn advance_drone_altitude(state: &mut SimulationState, step_seconds: f32) {
+    const VERTICAL_SPEED_MPS: f32 = 2.0;
+    let max_step = (VERTICAL_SPEED_MPS * step_seconds.max(0.05)).max(0.05);
+    for device in &mut state.world.devices {
+        if device.kind != DeviceKind::Drone || !device.active {
+            continue;
+        }
+        let target_y = match device.status {
+            DeviceStatus::Working | DeviceStatus::Moving => {
+                device.physical_profile.min_work_altitude_m.max(0.0)
+            }
+            DeviceStatus::Idle | DeviceStatus::Charging | DeviceStatus::Offline => 0.0,
+        };
+        let current = device.position.y;
+        if (current - target_y).abs() < 0.01 {
+            continue;
+        }
+        let delta = (target_y - current).clamp(-max_step, max_step);
+        let next = (current + delta)
+            .max(0.0)
+            .min(device.physical_profile.max_work_altitude_m.max(target_y));
+        if (next - current).abs() >= 0.001 {
+            device.position.y = next;
+            device.updated_at = now();
         }
     }
 }
